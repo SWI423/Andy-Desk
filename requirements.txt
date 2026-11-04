@@ -1,0 +1,25 @@
+# 大白 Baymax_pro 依赖清单
+# 安装: pip install -r requirements.txt
+
+# === 核心 AI ===
+openai>=1.0.0          # 调智谱 API（兼容 OpenAI 接口）
+requests>=2.31.0       # HTTP 请求（embedding API）
+
+# === GUI ===
+PyQt6>=6.5.0           # 桌宠窗口、聊天面板
+
+# === 数据 ===
+numpy>=1.24.0          # 向量相似度计算
+
+# === 工具 ===
+APScheduler>=3.10.0    # 定时调度（提醒、久坐检测）
+python-dotenv>=1.0.0   # 读取 .env 环境变量
+
+# === 测试 ===
+pytest>=7.0.0          # 单元测试
+
+# === P1 语音（后续装）===
+# volcengine-python-sdk  # 豆包 TTS/ASR
+
+# === P2 桌面自动化（后续装）===
+# wxauto>=0.1.0          # 微信自动化
