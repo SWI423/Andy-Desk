@@ -1,6 +1,6 @@
 # Andy（Baymax_pro） 开发进度表
 
-> 任务编号与 `docs/WBS.md` v1.1 保持一致；需求见 `docs/PRD.md` v2.1；记忆层决策见 `docs/MEMORY_DESIGN.md`。
+> 任务编号与 `docs/WBS.md` v1.2 保持一致；需求见 `docs/PRD.md` v2.1；记忆层决策见 `docs/MEMORY_DESIGN.md`。
 > 口径：MVP 阶段只做"打通验证"，大规模回归与压测在 Demo 验收后统一进行。
 
 ---
@@ -101,7 +101,7 @@
 | 文档 | 说明 |
 |---|---|
 | `docs/PRD.md` | 需求基线 v2.1（三线管理助理定位） |
-| `docs/WBS.md` | 任务拆解 v1.1 |
+| `docs/WBS.md` | 任务拆解 v1.2（检索升级已并入风险表与变更记录） |
 | `docs/MEMORY_DESIGN.md` | 记忆层 ADR-001 + 落地记录 ADR-003~008（ADR-003 已被 ADR-008 取代） |
 | `docs/DECISIONS.md` | 架构决策详细说明（场景、两种做法、函数卡片、实例、边界） |
 | `docs/PROGRESS.md` | 本文件 |
