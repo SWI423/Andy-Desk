@@ -425,6 +425,9 @@ class BaymaxWindow(QMainWindow):
         super().__init__()
         ensure_dirs()
         db.init_db()
+        from core.profile import ensure_first_user, get_user_name
+        ensure_first_user()
+        self.user_name = get_user_name()
 
         self.setWindowTitle(f"{APP_NAME} · 学习 / 工作 / 生活")
         self.resize(1060, 700)
@@ -459,6 +462,10 @@ class BaymaxWindow(QMainWindow):
         self.status_label.setObjectName("muted")
         self.status_label.setWordWrap(True)
         head.addWidget(title)
+        if self.user_name:
+            who = QLabel(f"服务对象：{self.user_name}")
+            who.setObjectName("muted")
+            head.addWidget(who)
         head.addStretch(1)
         lv.addLayout(head)
         lv.addWidget(self.status_label)
@@ -494,7 +501,7 @@ class BaymaxWindow(QMainWindow):
         rv = QVBoxLayout(right)
         rv.setContentsMargins(6, 10, 10, 10)
 
-        chat_title = QLabel("和 大白 说")
+        chat_title = QLabel(f"和 {APP_NAME} 说")
         chat_title.setObjectName("h1")
         rv.addWidget(chat_title)
 
@@ -558,12 +565,14 @@ class BaymaxWindow(QMainWindow):
     # ---- 对话 ----
     def _greet(self):
         ov = tasks.today_overview()
+        who = f"{self.user_name}，" if self.user_name else ""
         if ov["overdue"] or ov["due_today"]:
-            text = (f"早。今天到期 {ov['due_today']} 项，逾期 {ov['overdue']} 项。"
+            text = (f"{who}今天到期 {ov['due_today']} 项，逾期 {ov['overdue']} 项。"
                     f"先挑一件动手，我帮你盯着剩下的。")
         else:
-            text = "我在。今天没压着的事，想记点什么、设个提醒，直接说。"
-        self.chat.append(f"<p style='color:#0f766e'><b>大白</b></p><p>{html.escape(text)}</p>")
+            text = f"{who}我在。今天没压着的事，想记点什么、设个提醒，直接说。"
+        self.chat.append(f"<p style='color:#0f766e'><b>{APP_NAME}</b></p>"
+                         f"<p>{html.escape(text)}</p>")
 
     def _append_user(self, text: str):
         self.chat.append(f"<p style='color:#64748b'><b>你</b></p>"
@@ -589,7 +598,7 @@ class BaymaxWindow(QMainWindow):
             return
         self.input.clear()
         self._append_user(text)
-        self.chat.append("<p style='color:#0f766e'><b>大白</b></p>")
+        self.chat.append(f"<p style='color:#0f766e'><b>{APP_NAME}</b></p>")
         cursor = self.chat.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.chat.setTextCursor(cursor)

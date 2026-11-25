@@ -1,4 +1,4 @@
-# 大白 Baymax_pro 依赖清单
+# Andy（Baymax_pro） 依赖清单
 # 安装: pip install -r requirements.txt
 
 # === 核心 AI ===

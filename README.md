@@ -1,4 +1,4 @@
-# 大白 Baymax_pro
+# Andy（Baymax_pro）
 
 个人管理助手，管三件事：**学习、工作、生活**。
 桌面窗口 + 对话 + function calling，能力按"注册表"扩展。
@@ -17,7 +17,20 @@
 | 记长期事实 | "以后十点后别提醒我学习" | `memory_save` → `semantic_facts` |
 | 手动管理 | 左侧看板：新建/开始/完成/编辑/删除；提醒页：新建/停用/测试 | PyQt6 |
 
-时间规则：说"提醒"但没给时间时，大白会先反问，不会瞎猜。
+时间规则：说"提醒"但没给时间时，Andy 会先反问，不会瞎猜。
+
+---
+
+## 当前用户
+
+| 项 | 值 |
+|---|---|
+| 用户 | **Wen**（首位用户，2026-11-25 建档） |
+| 助手 | **Andy** |
+| 档案内容 | 名字、启用日期、助手名、备注；同时写一条语义事实 `name=Wen`，每轮注入 |
+| 改名 / 查看 | `python scripts/init_user.py --name 新名字`、`python scripts/init_user.py --show` |
+
+档案是幂等的：重复启动不会覆盖已有资料。
 
 ---
 
@@ -43,7 +56,7 @@ python main.py --selftest   # 窗口自检，3.5 秒后自动退出，截图存 
 python scripts/smoke_core.py            # 核心链路（不碰正式库，用 data/smoke）
 python scripts/smoke_core.py --no-llm   # 只测本地逻辑，不调模型
 python scripts/smoke_gui.py             # GUI 全流程 + 截图（独立库）
-python -m pytest tests -q               # 16 项单测
+python -m pytest tests -q               # 17 项单测
 ```
 
 ---
@@ -77,7 +90,7 @@ Baymax_pro/
 ├─ desktop/
 │  ├─ main_window.py    三线看板 + 对话 + 提醒
 │  └─ theme.py          浅色主题
-├─ docs/                PRD / WBS / MEMORY_DESIGN / PROGRESS
+├─ docs/                PRD / WBS / MEMORY_DESIGN / DECISIONS / PROGRESS
 ├─ scripts/             smoke_core.py / smoke_gui.py
 ├─ tests/               pytest
 └─ data/                SQLite（不入库）
@@ -100,6 +113,7 @@ scheduler（30s 心跳 → 到点回调 → 窗口浮层）
 ```
 
 记忆层细节见 `docs/MEMORY_DESIGN.md`（ADR-001 + 落地记录 ADR-003~007）。
+决策的通俗解释（每个决定你会感觉到什么差别）见 `docs/DECISIONS.md`。
 
 ---
 
@@ -138,7 +152,7 @@ scheduler（30s 心跳 → 到点回调 → 窗口浮层）
 
 | 检查 | 方式 | 结果 |
 |---|---|---|
-| 单测 16 项 | `pytest tests -q` | 全部通过 |
+| 单测 17 项 | `pytest tests -q` | 全部通过 |
 | 数据层打通 | `smoke_core.py --no-llm` | 建任务/更新/概览/拆解/提醒/记忆/工具直调全部正常 |
 | 模型 + 工具 | `smoke_core.py`（真调 API） | `overview_today`、`reminder_create` 真实触发 |
 | 时间拦截 | 同一脚本 | "提醒我交周报" → 反问时间，不调模型 |

@@ -1,5 +1,5 @@
 """
-大白 Baymax_pro 主入口
+Andy（Baymax_pro） 主入口
 用法:
     python main.py              启动桌面窗口
     python main.py --cli        终端对话（无 GUI 时可用）
@@ -38,7 +38,9 @@ def health_report():
 
 def run_cli():
     from core import brain, tasks
-    print("大白 CLI。输入 exit 退出。")
+    from core.profile import get_user_name
+    name = get_user_name()
+    print(f"Andy CLI{' · ' + name if name else ''}。输入 exit 退出。")
     print(tasks.overview_text())
     while True:
         try:
@@ -84,17 +86,20 @@ def run_gui(selftest: bool = False):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="大白 · 三线管理助手")
+    parser = argparse.ArgumentParser(description="Andy · 三线管理助手")
     parser.add_argument("--cli", action="store_true", help="终端模式")
     parser.add_argument("--selftest", action="store_true", help="窗口自检后自动退出")
     args = parser.parse_args()
 
     logger.info("=" * 44)
-    logger.info("大白 Baymax_pro 启动")
+    logger.info("Andy（Baymax_pro） 启动")
     logger.info("=" * 44)
     ensure_dirs()
     from core import db
     db.init_db()
+    from core.profile import ensure_first_user
+    boot = ensure_first_user()
+    logger.info(f"用户档案：{boot['name']}（{'新建' if boot['created'] else '已存在'}）")
     health_report()
 
     if args.cli:

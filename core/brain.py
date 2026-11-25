@@ -114,7 +114,7 @@ def _parse_args(raw: str) -> dict:
 
 def ask_baymax(user_input: str, on_chunk=None, session_id: str = SESSION_ID) -> dict:
     """
-    大白对话主入口
+    Andy对话主入口
     返回 {"reply", "tools_called", "tool_results", "context_meta", "error"}
     """
     text = (user_input or "").strip()

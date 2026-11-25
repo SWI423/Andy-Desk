@@ -1,4 +1,4 @@
-# 大白 Baymax_pro 开发进度表
+# Andy（Baymax_pro） 开发进度表
 
 > 任务编号与 `docs/WBS.md` v1.1 保持一致；需求见 `docs/PRD.md` v2.1；记忆层决策见 `docs/MEMORY_DESIGN.md`。
 > 口径：MVP 阶段只做"打通验证"，大规模回归与压测在 Demo 验收后统一进行。
@@ -74,13 +74,14 @@
 
 | 检查项 | 命令 | 结果 |
 |---|---|---|
-| 单元测试 | `pytest tests -q` | 16 passed |
+| 单元测试 | `pytest tests -q` | 17 passed |
 | 数据层 + 规则 | `scripts/smoke_core.py --no-llm` | 通过 |
 | 模型 + 工具循环 | `scripts/smoke_core.py`（真调） | 通过：`overview_today` / `reminder_create` 真实触发 |
 | 时间硬拦截 | 同上 | 通过：无时间词时反问，不调模型 |
 | 多轮工具 | `scripts/check_multi_tool.py` | 通过："做完了" → 按标题定位 → 置 done |
 | GUI 全流程 | `scripts/smoke_gui.py` | 通过：建任务 → 问 → 回 → 提醒浮层 → 截图 |
 | 窗口自检 | `main.py --selftest` | 6 模块健康检查 OK |
+| 用户档案 | `scripts/init_user.py --name Wen` | 建档成功：Wen / 2026-11-25 / 首位用户；CLI 实测能答"我是 Andy，你是 Wen" |
 
 未覆盖：并发、长时间挂机、大批量任务、真实到点提醒（只用手动触发验证过链路）。
 
@@ -93,6 +94,7 @@
 | `docs/PRD.md` | 需求基线 v2.1（三线管理助理定位） |
 | `docs/WBS.md` | 任务拆解 v1.1 |
 | `docs/MEMORY_DESIGN.md` | 记忆层 ADR-001 + 落地记录 ADR-003~007 |
+| `docs/DECISIONS.md` | 架构决策通俗版（每个决定的实际影响与升级条件） |
 | `docs/PROGRESS.md` | 本文件 |
 | `README.md` | 试用说明、扩展指南、已知限制 |
 
@@ -105,3 +107,4 @@
 | 2026-11-04 | M1/M2 完成（旧编号口径） |
 | 2026-11-25 | 对齐 PRD v2.1 / WBS v1.1，任务数扩为 14 项 |
 | 2026-11-25 | MVP 全部功能落地：数据层、记忆、任务、工具、调度、窗口；简单打通验证通过，进入用户试用人验收 |
+| 2026-11-25 | 产品定名 **Andy**（工程代号 Baymax_pro）；建立首位用户档案 **Wen**；新增 `docs/DECISIONS.md`；测试 17 项 |

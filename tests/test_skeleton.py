@@ -62,7 +62,7 @@ def test_tools_import():
 
 def test_prompts_import():
     import prompts
-    assert "大白" in prompts.SYSTEM_PROMPT
+    assert "Andy" in prompts.SYSTEM_PROMPT
     assert prompts.build_system_prompt().startswith(prompts.SYSTEM_PROMPT)
 
 
@@ -157,6 +157,19 @@ def test_time_intercept():
     assert brain.needs_time_clarify("明天下午三点提醒我交周报") is False
     assert brain.needs_time_clarify("每天 8:30 叫我起床") is False
     assert brain.needs_time_clarify("今天还有什么要紧的") is False
+
+
+def test_user_bootstrap(tmp_db):
+    from core.profile import ensure_first_user, get_profile_summary
+    from core import memory
+    r1 = ensure_first_user("Wen")
+    assert r1 == {"created": True, "name": "Wen"}
+    assert get_profile_summary()["user_name"] == "Wen"
+    assert get_profile_summary()["assistant_name"] == "Andy"
+    assert any(f["object"] == "Wen" for f in memory.get_facts())
+
+    r2 = ensure_first_user("别人")
+    assert r2["created"] is False and r2["name"] == "Wen"   # 不覆盖已有档案
 
 
 def test_overview_counts(tmp_db):
