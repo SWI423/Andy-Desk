@@ -103,6 +103,9 @@ def test_reminder_rules():
     assert sch.compute_next("daily", "07:30", after=now).day == 26
     assert sch.compute_next("daily", "21:00", after=now).day == 25
     assert sch.compute_next("weekly", "1 09:00", after=now).day == 30  # 下一个周一
+    assert sch.compute_next("weekly", "周一 09:00", after=now).day == 30  # 中文写法
+    assert sch.parse_expr("weekly", "周一 09:00")[0] is True
+    assert sch.parse_expr("weekly", "星期八 09:00")[0] is False
     assert sch.compute_next("once", "2026-11-20 09:00", after=now) is None
     assert sch.parse_expr("daily", "25:00")[0] is False
     assert sch.parse_expr("weekly", "8 09:00")[0] is False

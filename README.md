@@ -142,6 +142,7 @@ scheduler（30s 心跳 → 到点回调 → 窗口浮层）
 | 数据层打通 | `smoke_core.py --no-llm` | 建任务/更新/概览/拆解/提醒/记忆/工具直调全部正常 |
 | 模型 + 工具 | `smoke_core.py`（真调 API） | `overview_today`、`reminder_create` 真实触发 |
 | 时间拦截 | 同一脚本 | "提醒我交周报" → 反问时间，不调模型 |
+| 多轮工具（先查再改） | `scripts/check_multi_tool.py` | "模电实验报告我做完了" → 按标题定位并置 done |
 | GUI 全流程 | `smoke_gui.py` | 建任务 → 发问 → 回 `task_list` 结果 → 提醒浮层 → 截图 |
 | 窗口自检 | `main.py --selftest` | 6 模块健康检查 OK，窗口正常退出 |
 

@@ -53,17 +53,21 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "task_update",
-            "description": "更新任务状态或进度。用户说「做完了/开始了/推到 70%」时调用。",
+            "description": ("更新任务状态或进度。用户说「做完了/开始了/推到 70%」时调用。"
+                            "优先使用上下文里给出的任务编号；没有编号就传 title 让系统按标题匹配，"
+                            "绝对不要编造 task_id。"),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "task_id": {"type": "integer", "description": "任务 id（从 task_list 结果里取）"},
+                    "task_id": {"type": "integer",
+                                "description": "任务编号（上下文「未完成任务」里有）；不知道就留空"},
+                    "title": {"type": "string", "description": "任务标题，用于按标题定位"},
                     "status": {"type": "string", "enum": ["todo", "doing", "done"],
                                "description": "新状态"},
                     "progress": {"type": "integer", "description": "进度 0-100"},
                     "due_at": {"type": "string", "description": "新的截止时间，格式 YYYY-MM-DD HH:MM"},
                 },
-                "required": ["task_id"],
+                "required": [],
             },
         },
     },
@@ -161,7 +165,18 @@ def _tool_task_list(domain="all", status="all"):
                        "due": t["due_at"], "priority": t["priority_text"]} for t in rows[:30]]}
 
 
-def _tool_task_update(task_id, status=None, progress=None, due_at=None):
+def _tool_task_update(task_id=None, title=None, status=None, progress=None, due_at=None):
+    if task_id in (None, "", 0):
+        if not title:
+            return {"ok": False, "error": "需要任务编号或标题才能更新"}
+        cands = tasks.find_by_title(title)
+        if not cands:
+            return {"ok": False, "error": f"没找到「{title}」对应的未完成任务"}
+        if len(cands) > 1:
+            return {"ok": False,
+                    "error": "匹配到多条，请让用户确认编号",
+                    "candidates": [{"id": c["id"], "title": c["title"]} for c in cands]}
+        task_id = cands[0]["id"]
     r = tasks.update_task(int(task_id), status=status, progress=progress, due_at=due_at)
     if not r.get("ok"):
         return r

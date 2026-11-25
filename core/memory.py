@@ -193,15 +193,20 @@ def build_context(user_input: str, budget: int = CONTEXT_TOKEN_BUDGET) -> dict:
         sections["facts"] = "【关于用户】\n" + "\n".join(
             f"- {f['predicate']}: {f['object']}" for f in facts)
 
-    # ② 今日状态（局部 import 避免循环依赖）
+    # ② 今日状态 + 未完成任务编号（避免模型编造 id）
     try:
         from core import tasks
         ov = tasks.today_overview()
-        sections["overview"] = (
-            "【今日状态】\n"
+        lines = [
+            "【今日状态】",
             f"今日到期 {ov['due_today']} 项 / 逾期 {ov['overdue']} 项 / "
-            f"进行中 {ov['doing']} 项 / 今日提醒 {ov['reminders_today']} 条"
-        )
+            f"进行中 {ov['doing']} 项 / 今日提醒 {ov['reminders_today']} 条",
+        ]
+        brief = tasks.list_brief(limit=8)
+        if brief:
+            lines.append("未完成任务（用编号操作）：" + "；".join(
+                f"#{b['id']} {b['title']}（{b['domain']}·{b['status']}）" for b in brief))
+        sections["overview"] = "\n".join(lines)
     except Exception:
         pass
 

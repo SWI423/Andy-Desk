@@ -14,8 +14,21 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from core import db
 
 WEEK_TEXT = {1: "周一", 2: "周二", 3: "周三", 4: "周四", 5: "周五", 6: "周六", 7: "周日"}
+WEEK_CN = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6, "日": 7, "天": 7, "七": 7}
 TICK_SECONDS = 30
 MISS_GRACE_MINUTES = 10      # 超过 10 分钟未触发算"错过"
+
+
+def parse_week(token: str):
+    """'1' / '周一' / '星期一' / '一' 都能解析成 1-7"""
+    t = (token or "").strip()
+    if t.isdigit():
+        n = int(t)
+        return n if 1 <= n <= 7 else None
+    for prefix in ("星期", "周", "礼拜"):
+        if t.startswith(prefix):
+            t = t[len(prefix):]
+    return WEEK_CN.get(t)
 
 
 # ---------------- 规则计算 ----------------
@@ -39,13 +52,13 @@ def parse_expr(rule_type: str, rule_expr: str):
             return False, "每日提醒时间格式应为 HH:MM"
     if rule_type == "weekly":
         parts = rule_expr.split()
-        if len(parts) == 2 and parts[0].isdigit() and 1 <= int(parts[0]) <= 7:
+        if len(parts) == 2 and parse_week(parts[0]):
             try:
                 datetime.strptime(parts[1], "%H:%M")
                 return True, None
             except ValueError:
                 pass
-        return False, "每周提醒格式应为 '周几  HH:MM'，如 '1 09:00' 表示周一 9 点"
+        return False, "每周提醒格式应为 '周几 HH:MM'，如 '周一 09:00' 或 '1 09:00'"
     return False, f"未知规则类型 {rule_type}"
 
 
@@ -69,7 +82,10 @@ def compute_next(rule_type: str, rule_expr: str, after: datetime = None):
 
     if rule_type == "weekly":
         parts = rule_expr.split()
-        target, hh, mm = int(parts[0]), int(parts[1].split(":")[0]), int(parts[1].split(":")[1])
+        target = parse_week(parts[0])
+        if not target:
+            return None
+        hh, mm = [int(x) for x in parts[1].split(":")]
         cand = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
         delta = (target - now.isoweekday()) % 7
         if delta == 0 and cand <= now:
@@ -86,7 +102,8 @@ def rule_text(rule_type: str, rule_expr: str) -> str:
         return f"每天 {rule_expr}"
     if rule_type == "weekly":
         p = rule_expr.split()
-        return f"每{WEEK_TEXT.get(int(p[0]), p[0])} {p[1]}"
+        n = parse_week(p[0]) if p else None
+        return f"每{WEEK_TEXT.get(n, p[0] if p else rule_expr)} {p[1] if len(p) > 1 else ''}".strip()
     return rule_expr
 
 

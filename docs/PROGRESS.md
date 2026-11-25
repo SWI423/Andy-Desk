@@ -78,6 +78,7 @@
 | 数据层 + 规则 | `scripts/smoke_core.py --no-llm` | 通过 |
 | 模型 + 工具循环 | `scripts/smoke_core.py`（真调） | 通过：`overview_today` / `reminder_create` 真实触发 |
 | 时间硬拦截 | 同上 | 通过：无时间词时反问，不调模型 |
+| 多轮工具 | `scripts/check_multi_tool.py` | 通过："做完了" → 按标题定位 → 置 done |
 | GUI 全流程 | `scripts/smoke_gui.py` | 通过：建任务 → 问 → 回 → 提醒浮层 → 截图 |
 | 窗口自检 | `main.py --selftest` | 6 模块健康检查 OK |
 

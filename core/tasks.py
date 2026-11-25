@@ -70,6 +70,39 @@ def get_task(task_id: int):
     return _row(db.query_one("SELECT * FROM tasks WHERE id=?", (int(task_id),)))
 
 
+def find_by_title(title: str, limit: int = 5) -> list:
+    """
+    按标题找未完成任务（模型说"XX 做完了"时用来定位 id）
+    先精确匹配，再做包含匹配；都不中就用字符重合度兜底
+    """
+    title = (title or "").strip()
+    if not title:
+        return []
+    exact = db.query(
+        "SELECT * FROM tasks WHERE title=? AND status<>'done' ORDER BY id DESC LIMIT ?",
+        (title, limit))
+    if exact:
+        return [_row(r) for r in exact]
+    like = db.query(
+        "SELECT * FROM tasks WHERE title LIKE ? AND status<>'done' ORDER BY id DESC LIMIT ?",
+        (f"%{title}%", limit))
+    if like:
+        return [_row(r) for r in like]
+    from difflib import SequenceMatcher
+    open_rows = db.query("SELECT * FROM tasks WHERE status<>'done' ORDER BY id DESC LIMIT 50")
+    scored = [(SequenceMatcher(None, title, r["title"]).ratio(), r) for r in open_rows]
+    scored = [(s, r) for s, r in scored if s >= 0.45]
+    scored.sort(key=lambda x: -x[0])
+    return [_row(r) for _, r in scored[:limit]]
+
+
+def list_brief(limit: int = 8) -> list:
+    """给模型看的紧凑清单：#id 标题（领域·状态）"""
+    rows = list_tasks(include_done=False, limit=limit)
+    return [{"id": t["id"], "title": t["title"], "domain": t["domain_text"],
+             "status": t["status_text"]} for t in rows]
+
+
 def list_tasks(domain: str = None, status: str = None, include_done: bool = False,
                limit: int = 100) -> list:
     """按领域/状态查询；默认不含已完成"""
