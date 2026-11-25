@@ -113,7 +113,7 @@ scheduler（30s 心跳 → 到点回调 → 窗口浮层）
 ```
 
 记忆层细节见 `docs/MEMORY_DESIGN.md`（ADR-001 + 落地记录 ADR-003~007）。
-决策的通俗解释（每个决定你会感觉到什么差别）见 `docs/DECISIONS.md`。
+决策的详细说明（场景、两种做法、函数卡片、实例数据、升级位置）见 `docs/DECISIONS.md`。
 
 ---
 

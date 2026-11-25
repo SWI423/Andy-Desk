@@ -94,7 +94,7 @@
 | `docs/PRD.md` | 需求基线 v2.1（三线管理助理定位） |
 | `docs/WBS.md` | 任务拆解 v1.1 |
 | `docs/MEMORY_DESIGN.md` | 记忆层 ADR-001 + 落地记录 ADR-003~007 |
-| `docs/DECISIONS.md` | 架构决策通俗版（每个决定的实际影响与升级条件） |
+| `docs/DECISIONS.md` | 架构决策详细说明（场景、两种做法、函数卡片、实例、边界） |
 | `docs/PROGRESS.md` | 本文件 |
 | `README.md` | 试用说明、扩展指南、已知限制 |
 

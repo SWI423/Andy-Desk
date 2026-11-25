@@ -1,12 +1,14 @@
 """
 多轮工具验证：先查再改（模拟"做完了"这类需要两轮工具的场景）
+每次运行使用独立测试库，重复跑不会因同名任务冲突
 """
 import os
 import sys
+from datetime import datetime
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
-os.environ.setdefault("DATA_DIR", "data/tooltest")
+os.environ.setdefault("DATA_DIR", f"data/tooltest_{datetime.now():%H%M%S}")
 
 from core import db, tasks, brain
 
