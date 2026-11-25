@@ -23,6 +23,7 @@ def health_report():
         ("调度模块", "core.scheduler"),
         ("工具系统", "core.tools"),
         ("数据库", "core.db"),
+        ("向量层", "core.embedding"),
     ):
         try:
             mod = __import__(importer, fromlist=["health_check"])
@@ -100,6 +101,15 @@ def main():
     from core.profile import ensure_first_user
     boot = ensure_first_user()
     logger.info(f"用户档案：{boot['name']}（{'新建' if boot['created'] else '已存在'}）")
+
+    from config import EMBED_ENABLED, EMBED_MODEL
+    from core import memory
+    if EMBED_ENABLED:
+        missing = memory.missing_vector_count()
+        logger.info(f"向量检索：{EMBED_MODEL}，待补 {missing} 条")
+        memory.kick_backfill()
+    else:
+        logger.info("向量检索已关闭（EMBED_ENABLED=0），使用关键词检索")
     health_report()
 
     if args.cli:

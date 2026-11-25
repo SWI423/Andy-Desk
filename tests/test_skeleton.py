@@ -12,6 +12,13 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
+@pytest.fixture(autouse=True)
+def _offline_embedding(monkeypatch):
+    """单测一律不联网：向量化返回 None，检索自动降级为关键词"""
+    from core import embedding
+    monkeypatch.setattr(embedding, "_OVERRIDE", lambda texts: None)
+
+
 @pytest.fixture
 def tmp_db(tmp_path, monkeypatch):
     from core import db

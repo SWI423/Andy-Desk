@@ -7,10 +7,15 @@
 """
 
 import re
+import threading
 from difflib import SequenceMatcher
 
+import numpy as np
+
+import config
 from config import SESSION_ID, HISTORY_LIMIT, CONTEXT_TOKEN_BUDGET
-from core import db
+from console import logger
+from core import db, embedding
 
 # ---------------- 规则：事实抽取 ----------------
 
@@ -145,9 +150,21 @@ def get_facts(domain: str = None, limit: int = 20) -> list:
     return db.query("SELECT * FROM semantic_facts ORDER BY updated_at DESC LIMIT ?", (limit,))
 
 
-# ---------------- 检索（MVP：字符重合度打分，零 embedding 成本）-----------------
+# ---------------- 检索：embedding 语义 + 关键词，RRF 融合 ----------------
+#
+# 设计（ADR-008，取代 ADR-003）：
+#   向量侧：embedding-3（2048 维）→ 余弦 ≥ EMBED_MIN_SCORE → 取前 EMBED_TOPK
+#   关键词侧：字符重合度 ≥ 0.35 → 取前 KEYWORD_TOPK
+#   两路用 RRF（1/(k+rank)）融合，取前 top_k
+# 降级：向量不可用（未配 key / 网络失败 / 尚未建索引）时只用关键词，不报错
+
+_VEC_CACHE = {"key": None, "ids": None, "mat": None}
+_BG_LOCK = threading.Lock()
+_BG_THREAD = None
+
 
 def _score(query_text: str, content: str) -> float:
+    """关键词侧：查询字集合被历史覆盖的比例"""
     q = set(re.findall(r"[\u4e00-\u9fff]|[a-zA-Z]{2,}", query_text))
     if not q:
         return 0.0
@@ -155,18 +172,242 @@ def _score(query_text: str, content: str) -> float:
     return len(q & c) / len(q)
 
 
-def search_events(query_text: str, top_k: int = 3, threshold: float = 0.35,
-                  exclude_recent: int = HISTORY_LIMIT * 2) -> list:
-    """从历史事件召回相关片段（排除最近窗口内已注入的）"""
+def _recent_event_ids(limit: int) -> set:
+    rows = db.query("SELECT id FROM chat_events ORDER BY id DESC LIMIT ?", (limit,))
+    return {r["id"] for r in rows}
+
+
+def _load_vectors(model: str, limit: int = 1000):
+    """
+    加载最近 limit 条向量（带进程内缓存；事件新增后自动失效重载）
+    同时做“去均值”中心化：embedding-3 的中文向量有明显公共方向，
+    直接算余弦时无关句也有 0.5+；减去语料均值后，相关与无关才拉得开
+    """
+    stat = db.query_one(
+        "SELECT COUNT(*) AS c, MAX(event_id) AS m FROM event_vectors WHERE model=?", (model,))
+    key = (model, stat["c"] if stat else 0, stat["m"] if stat else None)
+    if _VEC_CACHE["key"] == key and _VEC_CACHE["ids"] is not None:
+        return _VEC_CACHE["ids"], _VEC_CACHE["mat"], _VEC_CACHE["mean"]
+
     rows = db.query(
-        "SELECT * FROM chat_events WHERE role IN ('user','assistant') ORDER BY id DESC LIMIT 300"
-    )
+        """SELECT v.event_id, v.dim, v.vec FROM event_vectors v
+           JOIN chat_events e ON e.id=v.event_id
+           WHERE v.model=? AND e.role IN ('user','assistant')
+           ORDER BY e.id DESC LIMIT ?""", (model, limit))
+    if not rows:
+        _VEC_CACHE.update({"key": key, "ids": [], "mat": None, "mean": None})
+        return [], None, None
+
+    ids = [r["event_id"] for r in rows]
+    raw = np.vstack([embedding.from_blob(r["vec"], r["dim"]) for r in rows])
+    mean = raw.mean(axis=0)
+    centered = raw - mean
+    norms = np.linalg.norm(centered, axis=1, keepdims=True)
+    centered = centered / np.maximum(norms, 1e-8)
+    _VEC_CACHE.update({"key": key, "ids": ids, "mat": centered, "mean": mean})
+    return ids, centered, mean
+
+
+def _keyword_candidates(query_text: str, exclude_recent: int, top: int, threshold: float) -> list:
+    rows = db.query(
+        "SELECT * FROM chat_events WHERE role IN ('user','assistant') ORDER BY id DESC LIMIT 300")
     rows = rows[exclude_recent:] if len(rows) > exclude_recent else []
     scored = [(_score(query_text, m["content"]), m) for m in rows]
     scored = [(s, m) for s, m in scored if s >= threshold]
     scored.sort(key=lambda x: (-x[0], -x[1]["id"]))
-    return [{"content": m["content"], "role": m["role"], "ts": m["ts"], "score": round(s, 2)}
-            for s, m in scored[:top_k]]
+    return [{"id": m["id"], "content": m["content"], "role": m["role"], "ts": m["ts"],
+             "keyword_score": round(s, 3)} for s, m in scored[:top]]
+
+
+def _vector_candidates(query_text: str, exclude_recent: int, top: int, min_score: float):
+    """
+    返回 (候选列表, 状态)
+    状态：ok / disabled / no_query_vec / empty
+    """
+    if not config.EMBED_ENABLED:
+        return [], "disabled"
+    qv = embedding.embed_query(query_text)
+    if qv is None:
+        return [], "no_query_vec"
+
+    ids, mat, mean = _load_vectors(config.EMBED_MODEL)
+    if not ids:
+        return [], "empty"
+
+    qc = qv - mean
+    qnorm = float(np.linalg.norm(qc))
+    if qnorm < 1e-8:                     # 查询向量与语料均值重合，无区分度
+        return [], "ok"
+    scores = mat @ (qc / qnorm)
+    recent = _recent_event_ids(exclude_recent)
+    ranked = sorted(zip(ids, scores), key=lambda x: -float(x[1]))
+
+    best = float(ranked[0][1]) if ranked else 0.0
+    cutoff = max(min_score, best - config.EMBED_MARGIN)
+    picked = [(i, float(s)) for i, s in ranked if i not in recent and s >= cutoff][:top]
+    if not picked:
+        return [], "ok"
+    picked_ids = [i for i, _ in picked]
+    rows = {r["id"]: r for r in db.query(
+        "SELECT * FROM chat_events WHERE id IN (%s)" % ",".join("?" * len(picked_ids)),
+        tuple(picked_ids))}
+    out = []
+    for i, s in picked:
+        r = rows.get(i)
+        if not r:
+            continue
+        out.append({"id": i, "content": r["content"], "role": r["role"], "ts": r["ts"],
+                    "vector_score": round(s, 3)})
+    return out, "ok"
+
+
+def _rrf_merge(lists: list, k: int = config.RRF_K) -> list:
+    """RRF：对多路排名各贡献 1/(k+rank)，按总分降序"""
+    fused = {}
+    for tag, items in lists:
+        for rank, item in enumerate(items):
+            node = fused.setdefault(item["id"], {"id": item["id"], "rrf": 0.0,
+                                                 "content": item["content"], "role": item["role"],
+                                                 "ts": item["ts"], "via": set(),
+                                                 "vector_score": None, "keyword_score": None})
+            node["rrf"] += 1.0 / (k + rank + 1)
+            node["via"].add(tag)
+            if tag == "vector":
+                node["vector_score"] = item.get("vector_score")
+            else:
+                node["keyword_score"] = item.get("keyword_score")
+    out = list(fused.values())
+    for n in out:
+        n["score"] = round(max(n["vector_score"] or 0.0, n["keyword_score"] or 0.0), 2)
+        n["via"] = "both" if len(n["via"]) > 1 else next(iter(n["via"]))
+    out.sort(key=lambda n: -n["rrf"])
+    return out
+
+
+def search_events(query_text: str, top_k: int = 3, mode: str = "auto",
+                  threshold: float = 0.35, exclude_recent: int = HISTORY_LIMIT * 2) -> list:
+    """
+    混合检索（mode: auto / keyword / vector）
+    返回 [{"id","content","role","ts","score","via","vector_score","keyword_score"}]
+    """
+    kw = _keyword_candidates(query_text, exclude_recent, config.KEYWORD_TOPK, threshold)
+    vec, status = [], "disabled"
+    if mode in ("auto", "vector"):
+        vec, status = _vector_candidates(query_text, exclude_recent,
+                                         config.EMBED_TOPK, config.EMBED_MIN_SCORE)
+
+    lists = []
+    if vec:
+        lists.append(("vector", vec))
+    if kw:
+        lists.append(("keyword", kw))
+    if not lists:
+        _LAST_RETRIEVAL.update({"mode": "none", "vector_status": status,
+                                "keyword": 0, "vector": 0})
+        return []
+
+    fused = _rrf_merge(lists)
+    _LAST_RETRIEVAL.update({"mode": "hybrid" if len(lists) == 2 else lists[0][0],
+                            "vector_status": status, "keyword": len(kw), "vector": len(vec)})
+    return fused[:top_k]
+
+
+_LAST_RETRIEVAL = {}
+
+
+def last_retrieval() -> dict:
+    """最近一次检索的统计（写日志/排查用）"""
+    return dict(_LAST_RETRIEVAL)
+
+
+# ---------------- 向量索引维护 ----------------
+
+def _store_vector(event_id: int, content: str, model: str = None) -> bool:
+    model = model or config.EMBED_MODEL
+    vecs = embedding.embed_texts([content], model=model)
+    if not vecs:
+        return False
+    vec = vecs[0]
+    db.execute(
+        """INSERT OR REPLACE INTO event_vectors(event_id, model, dim, vec, created_at)
+           VALUES(?,?,?,?,?)""",
+        (event_id, model, int(len(vec)), embedding.to_blob(vec), db.now_iso()))
+    return True
+
+
+def missing_vector_count(model: str = None) -> int:
+    model = model or config.EMBED_MODEL
+    row = db.query_one(
+        """SELECT COUNT(*) AS c FROM chat_events e
+           WHERE e.role IN ('user','assistant')
+             AND NOT EXISTS (SELECT 1 FROM event_vectors v
+                             WHERE v.event_id=e.id AND v.model=?)""", (model,))
+    return int(row["c"]) if row else 0
+
+
+def backfill_vectors(batch: int = None, limit: int = None, model: str = None) -> dict:
+    """
+    给还没有向量的历史事件补向量（幂等）
+    batch 每批条数；limit 本次最多处理多少条；失败即停（避免网络异常时刷接口）
+    """
+    batch = batch or config.EMBED_BATCH
+    limit = limit or config.EMBED_BACKFILL_MAX
+    model = model or config.EMBED_MODEL
+    embedded, failed = 0, 0
+
+    while embedded < limit:
+        rows = db.query(
+            """SELECT e.id, e.content FROM chat_events e
+               WHERE e.role IN ('user','assistant')
+                 AND NOT EXISTS (SELECT 1 FROM event_vectors v
+                                 WHERE v.event_id=e.id AND v.model=?)
+               ORDER BY e.id ASC LIMIT ?""", (model, min(batch, limit - embedded)))
+        if not rows:
+            break
+        vecs = embedding.embed_texts([r["content"] for r in rows], model=model)
+        if not vecs:
+            failed += len(rows)
+            break
+        for r, v in zip(rows, vecs):
+            db.execute(
+                """INSERT OR REPLACE INTO event_vectors(event_id, model, dim, vec, created_at)
+                   VALUES(?,?,?,?,?)""",
+                (r["id"], model, int(len(v)), embedding.to_blob(v), db.now_iso()))
+            embedded += 1
+
+    return {"embedded": embedded, "failed": failed, "remaining": missing_vector_count(model)}
+
+
+def _bg_worker(limit: int):
+    try:
+        r = backfill_vectors(limit=limit)
+        logger.info("[embed] 后台补向量：+%s 条，剩余 %s 条", r["embedded"], r["remaining"])
+    except Exception as e:
+        logger.warning("[embed] 后台补向量失败: %s: %s", type(e).__name__, e)
+
+
+def kick_backfill(limit: int = None) -> bool:
+    """启动/每轮对话后触发一次后台补向量（不阻塞界面）"""
+    global _BG_THREAD
+    if not config.EMBED_ENABLED:
+        return False
+    with _BG_LOCK:
+        if _BG_THREAD is not None and _BG_THREAD.is_alive():
+            return False
+        _BG_THREAD = threading.Thread(target=_bg_worker, args=(limit or config.EMBED_BACKFILL_MAX,),
+                                      daemon=True, name="andy-embed-backfill")
+        _BG_THREAD.start()
+        return True
+
+
+def retrieval_report(query_text: str, top_k: int = 3, exclude_recent: int = HISTORY_LIMIT * 2) -> dict:
+    """对比三路结果（验证脚本用）"""
+    kw = _keyword_candidates(query_text, exclude_recent, config.KEYWORD_TOPK, 0.35)
+    vec, status = _vector_candidates(query_text, exclude_recent,
+                                     config.EMBED_TOPK, config.EMBED_MIN_SCORE)
+    return {"keyword": kw, "vector": vec,
+            "hybrid": search_events(query_text, top_k=top_k, exclude_recent=exclude_recent),
+            "vector_status": status, "missing": missing_vector_count()}
 
 
 # ---------------- 读路径：上下文组装 ----------------
@@ -229,7 +470,8 @@ def build_context(user_input: str, budget: int = CONTEXT_TOKEN_BUDGET) -> dict:
 
     return {
         "text": "\n\n".join(parts),
-        "stats": {"intents": intents, "tokens": used, "sections": list(sections.keys())},
+        "stats": {"intents": intents, "tokens": used, "sections": list(sections.keys()),
+                  "retrieval": last_retrieval(), "embed_missing": missing_vector_count()},
         "sections": sections,
     }
 

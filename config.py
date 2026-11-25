@@ -31,6 +31,17 @@ MAX_TOOL_ROUNDS = 4                               # 工具循环上限，防死�
 HISTORY_LIMIT = 6                                 # L1 工作记忆保留轮数
 CONTEXT_TOKEN_BUDGET = 2500                       # 记忆注入部分 token 上限（估算）
 
+# === 记忆检索（embedding + 关键词混合）===
+EMBED_ENABLED = os.getenv("EMBED_ENABLED", "1").lower() not in ("0", "false", "off")
+EMBED_MODEL = ZHIPU_EMBED_MODEL                   # embedding-3，实测输出 2048 维
+EMBED_BATCH = int(os.getenv("EMBED_BATCH", "16"))         # 批量向量化条数
+EMBED_TOPK = int(os.getenv("EMBED_TOPK", "10"))           # 向量侧候选条数
+EMBED_MIN_SCORE = float(os.getenv("EMBED_MIN_SCORE", "0.10"))   # 中心化余弦下限（本地语料标定）
+EMBED_MARGIN = float(os.getenv("EMBED_MARGIN", "0.06"))   # 只保留靠近最高分的候选
+EMBED_BACKFILL_MAX = int(os.getenv("EMBED_BACKFILL_MAX", "400"))  # 单次后台补向量上限
+RRF_K = int(os.getenv("RRF_K", "60"))                     # RRF 平滑常数
+KEYWORD_TOPK = int(os.getenv("KEYWORD_TOPK", "10"))       # 关键词侧候选条数
+
 # === 领域定义（三线）===
 DOMAINS = {
     "study": "学习",

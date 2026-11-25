@@ -205,19 +205,27 @@ class Scheduler:
             (now.strftime("%Y-%m-%d %H:%M:%S"),))
         if not overdue:
             return
-        missed = []
+        missed, late = [], []
         for r in overdue:
             last = datetime.strptime(r["next_fire_at"], "%Y-%m-%d %H:%M:%S")
             gap_min = (now - last).total_seconds() / 60
             if gap_min > MISS_GRACE_MINUTES:
                 self._bump_missed(r, last, now)
                 missed.append(r["content"])
+            else:
+                late.append(r["content"])          # 10 分钟内也补发，不静默吞掉
             self._advance(r, now)
-        if missed:
-            text = "启动时发现错过的提醒：" + "；".join(missed[:5])
-            if len(missed) > 5:
-                text += f" 等 {len(missed)} 条"
-            self.on_fire({"type": "catch_up", "content": text, "items": missed})
+        if missed or late:
+            parts = []
+            if missed:
+                parts.append("错过：" + "；".join(missed[:5]))
+            if late:
+                parts.append("刚到点：" + "；".join(late[:5]))
+            text = "启动时补发提醒（" + " / ".join(parts) + "）"
+            if len(missed) > 5 or len(late) > 5:
+                text += f" 共 {len(missed) + len(late)} 条"
+            self.on_fire({"type": "catch_up", "content": text,
+                          "items": missed + late})
 
     def _bump_missed(self, reminder: dict, last_fire: datetime, now: datetime):
         if reminder["rule_type"] == "daily":

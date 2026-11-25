@@ -1,7 +1,7 @@
 """
 简单打通验证（不做大规模测试）
 用法：python scripts/smoke_core.py [--no-llm]
-会写入独立测试库 data/smoke/baymax.db，不污染正式数据
+会写入独立测试库 data/smoke_<时间>/，不污染正式数据；--no-llm 同时关闭联网向量
 """
 
 import os
@@ -10,6 +10,9 @@ from datetime import datetime, timedelta
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+os.environ.setdefault("DATA_DIR", f"data/smoke_{datetime.now():%H%M%S}")
+if "--no-llm" in sys.argv:
+    os.environ["EMBED_ENABLED"] = "0"
 
 
 def line(title):

@@ -21,18 +21,25 @@
 |---|---|---|---|---|---|
 | M1 | 项目骨架初始化 | Must | 🟢 已完成 | 2026-11-04 | 目录 + 空壳 + pytest |
 | M2 | 配置与日志模块 | Must | 🟢 已完成 | 2026-11-04 | `config.py` / `console.py`；路径改为 BASE_DIR 绝对化 |
-| M3 | 数据库 Schema（记忆+任务+提醒） | Must | 🟢 已完成 | 2026-11-25 | `core/db.py`：8 张表 + WAL + 单写锁 |
+| M3 | 数据库 Schema（记忆+任务+提醒） | Must | 🟢 已完成 | 2026-11-25 | `core/db.py`：8 张表（含 `event_vectors`）+ WAL + 单写锁 |
 | M4 | 对话核心 | Must | 🟢 已完成 | 2026-11-25 | `core/brain.py`：流式 + 工具循环 ≤4 轮 + 时间硬拦截 |
 | M5a | 记忆写入 chat_events | Must | 🟢 已完成 | 2026-11-25 | `memory.log_event`，用户/AI 双落 |
 | M5b | 事实蒸馏 semantic_facts | Must | 🟢 已完成 | 2026-11-25 | 规则抽取 + 相似/包含去重（ADR-005） |
-| M5c | 上下文组装 + token 预算 | Must | 🟢 已完成 | 2026-11-25 | `memory.build_context`：facts > overview > recall |
+| M5c | 上下文组装 + token 预算 | Must | 🟢 已完成 | 2026-11-25 | `memory.build_context`：facts > overview > recall；召回改为混合检索 |
 | M6 | 任务层 tasks | Must | 🟢 已完成 | 2026-11-25 | `core/tasks.py`：三线、子任务、进度、事件轨迹、概览 |
 | M7 | 工具层 + 工具循环 | Must | 🟢 已完成 | 2026-11-25 | `core/tools.py`：8 个工具 schema + 注册表 |
 | M8 | 调度层（提醒+补发） | Must | 🟢 已完成 | 2026-11-25 | `core/scheduler.py`：30s 心跳 + 启动补发（ADR-004） |
 | M9 | 桌面窗口（三线看板） | Must | 🟢 已完成 | 2026-11-25 | `desktop/main_window.py` + `theme.py` |
-| M10 | 全链路验证 | Must | 🟢 已完成（简单验证） | 2026-11-25 | 16 项单测 + 核心/ GUI 两个冒烟脚本 |
+| M10 | 全链路验证 | Must | 🟢 已完成（简单验证） | 2026-11-25 | 23 项单测 + 核心/ GUI 两个冒烟脚本 + 检索对照脚本 |
 | M11 | 指令拆解（建任务/拆子任务） | Must | 🟢 已完成 | 2026-11-25 | `task_breakdown` 工具，≤6 步 |
 | M12 | 今日概览 | Must | 🟢 已完成 | 2026-11-25 | `tasks.today_overview` + 状态条 + `overview_today` 工具 |
+
+### 增量（WBS 基线之外，2026-11-25）
+
+| 项 | 说明 | 落地位置 |
+|---|---|---|
+| I1 向量检索 | embedding-3（2048 维）+ 中心化余弦 + 关键词 RRF；后台补索引、失败降级 | `core/embedding.py`、`core/memory.py`、`event_vectors` 表 |
+| I2 提醒补发边界 | 迟到 ≤10 分钟不再静默跳过，标"刚到点"补发一次 | `core/scheduler.py::_catch_up` |
 
 ---
 
@@ -74,13 +81,15 @@
 
 | 检查项 | 命令 | 结果 |
 |---|---|---|
-| 单元测试 | `pytest tests -q` | 17 passed |
+| 单元测试 | `pytest tests -q` | 23 passed（17 原有 + 6 向量） |
+| 向量索引与换说法召回 | `scripts/check_retrieval.py` | 8 条全部建索引；"那个证的事"由向量召回（0.11），关键词无命中 |
+| 向量降级 | 单测 `test_fallback_when_embedding_down` | 向量不可用时仍按关键词召回 |
 | 数据层 + 规则 | `scripts/smoke_core.py --no-llm` | 通过 |
 | 模型 + 工具循环 | `scripts/smoke_core.py`（真调） | 通过：`overview_today` / `reminder_create` 真实触发 |
 | 时间硬拦截 | 同上 | 通过：无时间词时反问，不调模型 |
 | 多轮工具 | `scripts/check_multi_tool.py` | 通过："做完了" → 按标题定位 → 置 done |
 | GUI 全流程 | `scripts/smoke_gui.py` | 通过：建任务 → 问 → 回 → 提醒浮层 → 截图 |
-| 窗口自检 | `main.py --selftest` | 6 模块健康检查 OK |
+| 窗口自检 | `main.py --selftest` | 7 模块健康检查 OK |
 | 用户档案 | `scripts/init_user.py --name Wen` | 建档成功：Wen / 2026-11-25 / 首位用户；CLI 实测能答"我是 Andy，你是 Wen" |
 
 未覆盖：并发、长时间挂机、大批量任务、真实到点提醒（只用手动触发验证过链路）。
@@ -93,7 +102,7 @@
 |---|---|
 | `docs/PRD.md` | 需求基线 v2.1（三线管理助理定位） |
 | `docs/WBS.md` | 任务拆解 v1.1 |
-| `docs/MEMORY_DESIGN.md` | 记忆层 ADR-001 + 落地记录 ADR-003~007 |
+| `docs/MEMORY_DESIGN.md` | 记忆层 ADR-001 + 落地记录 ADR-003~008（ADR-003 已被 ADR-008 取代） |
 | `docs/DECISIONS.md` | 架构决策详细说明（场景、两种做法、函数卡片、实例、边界） |
 | `docs/PROGRESS.md` | 本文件 |
 | `README.md` | 试用说明、扩展指南、已知限制 |
@@ -108,3 +117,4 @@
 | 2026-11-25 | 对齐 PRD v2.1 / WBS v1.1，任务数扩为 14 项 |
 | 2026-11-25 | MVP 全部功能落地：数据层、记忆、任务、工具、调度、窗口；简单打通验证通过，进入用户试用人验收 |
 | 2026-11-25 | 产品定名 **Andy**（工程代号 Baymax_pro）；建立首位用户档案 **Wen**；新增 `docs/DECISIONS.md`；测试 17 项 |
+| 2026-11-25 | 检索升级为 embedding + 关键词混合（ADR-008）；修提醒补发边界；测试 23 项；DECISIONS 决策 1 改写为实测版 |

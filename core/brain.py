@@ -137,6 +137,8 @@ def ask_baymax(user_input: str, on_chunk=None, session_id: str = SESSION_ID) -> 
         memory.extract_facts(text, source_event_id=uid)
     except Exception as e:
         logger.warning("[brain] 事实抽取失败: %s", e)
+    # 后台给老事件补向量，不阻塞本轮对话
+    memory.kick_backfill()
 
     # 3. 组装消息：稳定前缀 → 动态上下文 → 最近原文 → 当前输入
     dynamic = "\n\n".join(p for p in [current_time_text(), ctx["text"]] if p)

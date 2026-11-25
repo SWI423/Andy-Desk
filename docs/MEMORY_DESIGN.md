@@ -358,6 +358,7 @@ CREATE INDEX IF NOT EXISTS idx_reminder_next ON reminders(next_fire_at, enabled)
 |---|---|
 | 2026-11-25 | 初版。基于用户《记忆优化方案》重构，补充"先蒸馏后摘要""稳定前缀前置""按领域分区"三条决策；新增任务/提醒表以配合产品定位调整 |
 | 2026-11-25 | 追加 §11 落地记录：MVP 实际实现与原方案的偏差及原因（ADR-003~007） |
+| 2026-11-25 | 新增 ADR-008：检索升级为 embedding + 关键词混合（中心化余弦 + RRF），ADR-003 标记为被取代 |
 
 ---
 
@@ -371,6 +372,9 @@ CREATE INDEX IF NOT EXISTS idx_reminder_next ON reminders(next_fire_at, enabled)
 | L2 事件流水 | `core/memory.py::log_event` | 用户/AI 每条都落，append-only |
 | L3 事实蒸馏 | `core/memory.py::extract_facts` | 规则抽取 + 同 predicate 去重 |
 | 上下文组装 | `core/memory.py::build_context` | facts > overview > recall，按预算裁剪 |
+| 向量化与相似度 | `core/embedding.py` | embedding-3、单位向量、BLOB 编解码、查询缓存 |
+| 混合检索 | `core/memory.py::search_events` | 中心化余弦 top10 + 关键词 top10 → RRF → top3 |
+| 向量索引维护 | `core/memory.py::backfill_vectors` | 后台按旧→新补索引，幂等、失败即停 |
 | 任务层 | `core/tasks.py` | 三线、子任务、进度、task_events 轨迹、今日概览 |
 | 提醒层 | `core/scheduler.py` | once/daily/weekly + 启动补发 + missed_count |
 | 工具层 | `core/tools.py` | 8 个工具的 schema + 注册表 + 兜底错误收敛 |
@@ -380,7 +384,7 @@ CREATE INDEX IF NOT EXISTS idx_reminder_next ON reminders(next_fire_at, enabled)
 
 ### 11.2 与原方案的偏差（ADR-003 ~ ADR-007）
 
-**ADR-003：MVP 检索用"字符重合度打分"，不逐条调 embedding。**
+**ADR-003：MVP 检索用"字符重合度打分"，不逐条调 embedding。**（**已由 ADR-008 取代**，保留作为演进记录）
 - 原方案：向量 top_k=3。
 - 实际：`memory.search_events()` 对最近 300 条事件做中文字符/英文词重合度打分，阈值 0.35，取 top 3，并排除已注入的最近窗口。
 - 理由：每条消息都调 embedding 会多一次 API 往返（延迟、额度），而当前语料量小、问题多为短期事务；规则检索零成本、可解释。
@@ -405,6 +409,15 @@ CREATE INDEX IF NOT EXISTS idx_reminder_next ON reminders(next_fire_at, enabled)
 **ADR-007：工具层用"schema 列表 + 注册表"，作为扩展性主入口。**
 - 新增一个能力 = `TOOLS` 加一条 schema + `TOOL_REGISTRY` 加一个函数，`brain` 不改。
 - 未做 MCP / FastAPI 适配：按 PRD 的 ADR-002，本期不引入 HTTP 服务；后续把工具实现替换成"HTTP 调用"或"MCP client 调用"即可，schema 与对话层不变。
+
+**ADR-008：检索改为 embedding + 关键词混合（取代 ADR-003）。**
+- 索引：新增 `event_vectors(event_id, model, dim, vec BLOB, created_at)`，`vec` 为归一化后的 float32（embedding-3 实测 2048 维）；`event_id` 主键，重复写入用 `INSERT OR REPLACE`。
+- 写入：不在对话路径同步向量化；`brain` 每轮触发 `memory.kick_backfill()`，后台 daemon 线程按 id 从旧到新、每批 16 条补，单次上限 400 条；失败即停，下次继续。
+- 查询：最近 1000 条向量算均值并中心化（`q-mean`、`v-mean` 后归一化再点积）；排除最近 12 条；向量侧 `≥ max(0.10, 最高分-0.06)` 取前 10，关键词侧阈值 0.35 取前 10；两路 RRF（`k=60`）融合取前 3。
+- 阈值来源：在 8~16 条中文合成语料上实测标定（"那个证的事" 0.11 排第一，无关句中心化后约 0.005）；**不是通用常数**，语料规模变化后需用 `scripts/check_retrieval.py` 复核。
+- 降级：embedding 失败、未配 key、库中无向量时，自动只用关键词检索；两路都空则不注入。降级不影响本轮对话。
+- 成本与延迟：每条事件一次向量化（16 条/请求）、每轮一次查询向量化（同句有进程内缓存）；对话路径不再同步等待。
+- 已知代价：同题多条可能挤占前 3；未做时间衰减与 rerank；向量缓存占用约 16MB（1000×2048，含中心化副本）。
 
 ### 11.3 已落地的约束
 

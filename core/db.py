@@ -75,6 +75,17 @@ CREATE TABLE IF NOT EXISTS chat_events (
 CREATE INDEX IF NOT EXISTS idx_events_session_ts ON chat_events(session_id, ts);
 CREATE INDEX IF NOT EXISTS idx_events_summarized ON chat_events(summarized);
 
+-- ================= 记忆层 L2 向量索引（embedding-3，float32 BLOB）=================
+CREATE TABLE IF NOT EXISTS event_vectors (
+    event_id   INTEGER PRIMARY KEY,
+    model      TEXT    NOT NULL,
+    dim        INTEGER NOT NULL,
+    vec        BLOB    NOT NULL,          -- 单位向量，numpy float32 tobytes
+    created_at TEXT    NOT NULL,
+    FOREIGN KEY (event_id) REFERENCES chat_events(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_vectors_model ON event_vectors(model);
+
 -- ================= 记忆层 L3：结构化事实 =================
 CREATE TABLE IF NOT EXISTS semantic_facts (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
