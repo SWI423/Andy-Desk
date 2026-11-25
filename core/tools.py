@@ -150,9 +150,16 @@ def _tool_task_create(title, domain="life", priority=2, due_at=None, notes=""):
     if not r.get("ok"):
         return r
     t = r["task"]
-    return {"ok": True, "id": t["id"], "title": t["title"], "domain": t["domain_text"],
-            "due": t["due_at"], "priority": t["priority_text"],
-            "reply_hint": f"已记入{t['domain_text']}：{t['title']}"}
+    out = {"ok": True, "id": t["id"], "title": t["title"], "domain": t["domain_text"],
+           "due": t["due_at"], "priority": t["priority_text"],
+           "reply_hint": (r.get("reply_hint")
+                          or f"已记入{t['domain_text']}：{t['title']}")}
+    if r.get("duplicate"):
+        out["duplicate"] = True
+    if r.get("due_warning"):
+        out["due_warning"] = r["due_warning"]
+        out["reply_hint"] = f"任务已记下，但{due_at}这个截止时间我没看懂，需要和用户确认"
+    return out
 
 
 def _tool_task_list(domain="all", status="all"):
@@ -212,8 +219,13 @@ def _tool_overview_today():
             "overdue_list": [{"id": t["id"], "title": t["title"]} for t in ov["overdue_list"]]}
 
 
-def _tool_memory_save(predicate, obj, domain="general"):
-    return memory.upsert_fact(predicate, obj, domain=domain)
+def _tool_memory_save(predicate, object=None, domain="general", obj=None):
+    """
+    注意：schema 里的字段叫 object，函数必须同名接收；
+    旧版写成 obj，模型按 schema 传 object 时直接 TypeError，长期记忆会静默写不进去
+    """
+    value = object if object is not None else obj
+    return memory.upsert_fact(predicate, value, domain=domain)
 
 
 TOOL_REGISTRY = {

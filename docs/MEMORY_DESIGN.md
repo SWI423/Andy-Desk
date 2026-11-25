@@ -359,6 +359,7 @@ CREATE INDEX IF NOT EXISTS idx_reminder_next ON reminders(next_fire_at, enabled)
 | 2026-11-25 | 初版。基于用户《记忆优化方案》重构，补充"先蒸馏后摘要""稳定前缀前置""按领域分区"三条决策；新增任务/提醒表以配合产品定位调整 |
 | 2026-11-25 | 追加 §11 落地记录：MVP 实际实现与原方案的偏差及原因（ADR-003~007） |
 | 2026-11-25 | 新增 ADR-008：检索升级为 embedding + 关键词混合（中心化余弦 + RRF），ADR-003 标记为被取代 |
+| 2026-11-25 | 新增 ADR-009：检索二轮优化（角色过滤、小语料免中心化、语义为主排序、主题加权、近义去重、事实方向抽取）；混合 R@1 100% |
 
 ---
 
@@ -373,7 +374,7 @@ CREATE INDEX IF NOT EXISTS idx_reminder_next ON reminders(next_fire_at, enabled)
 | L3 事实蒸馏 | `core/memory.py::extract_facts` | 规则抽取 + 同 predicate 去重 |
 | 上下文组装 | `core/memory.py::build_context` | facts > overview > recall，按预算裁剪 |
 | 向量化与相似度 | `core/embedding.py` | embedding-3、单位向量、BLOB 编解码、查询缓存 |
-| 混合检索 | `core/memory.py::search_events` | 中心化余弦 top10 + 关键词 top10 → RRF → top3 |
+| 混合检索 | `core/memory.py::search_events` | 中心化余弦 top10 + 关键词 top10 → 语义为主融合 + 主题加权 → 门槛 → top3 |
 | 向量索引维护 | `core/memory.py::backfill_vectors` | 后台按旧→新补索引，幂等、失败即停 |
 | 任务层 | `core/tasks.py` | 三线、子任务、进度、task_events 轨迹、今日概览 |
 | 提醒层 | `core/scheduler.py` | once/daily/weekly + 启动补发 + missed_count |
@@ -417,7 +418,19 @@ CREATE INDEX IF NOT EXISTS idx_reminder_next ON reminders(next_fire_at, enabled)
 - 阈值来源：在 8~16 条中文合成语料上实测标定（"那个证的事" 0.11 排第一，无关句中心化后约 0.005）；**不是通用常数**，语料规模变化后需用 `scripts/check_retrieval.py` 复核。
 - 降级：embedding 失败、未配 key、库中无向量时，自动只用关键词检索；两路都空则不注入。降级不影响本轮对话。
 - 成本与延迟：每条事件一次向量化（16 条/请求）、每轮一次查询向量化（同句有进程内缓存）；对话路径不再同步等待。
-- 已知代价：同题多条可能挤占前 3；未做时间衰减与 rerank；向量缓存占用约 16MB（1000×2048，含中心化副本）。
+- 已知代价：同题多条可能挤占前 3；向量缓存占用约 16MB（1000×2048，含中心化副本）。排序与角色策略已由 ADR-009 取代。
+
+**ADR-009：检索二轮优化——只召回用户原话、语义为主、主题加权、方向抽取。**
+
+- 角色过滤：只索引/召回 `user` + `system`。助理回复本质是用户原话的复述，混进候选会挤掉原话；`missing_vector_count` 与 `backfill_vectors` 同步只处理这两类，省 embedding 调用。
+- 小语料保护：向量条数 `< EMBED_MIN_CORPUS(8)` 时不做去均值（3 条同向语料会被抹成 0），退化为原始单位向量余弦，阈值抬到 `EMBED_SMALL_SCORE=0.45`；返回 `(ids, mat, mean, centered)`。
+- 门槛修正：`best` 只在“非最近、可召回”集合里取，再算 `cutoff = max(eff_min, best - EMBED_MARGIN)`，避免最近的高分事件把老记忆全部滤掉。
+- 排序：各路分数按该路最高分归一化，`base = 0.75*sim + 0.25*(rrf/max_rrf)`，再乘 `(0.9 + 0.1*recency)`；`recency` 用半衰期 120 天、下限 0.35 的指数衰减。
+- 主题加权：问句与内容落在同一主题（健康/饮食/工作/学习/钱）时 +0.08；涉及“吃/过敏”且内容明确提到过敏原时 +0.16（安全优先，避免被“晚上吃什么”这类闲聊压过）。词表在 `core/memory.py::INTENT_WORDS`，新领域需要补词。
+- 去重与门槛：近义句（去标点后相同/包含≤10 字/相似度≥0.85）只保留排序靠前者；候选 `sim < 0.80 * 最高分` 且不是双路命中则丢弃（`RECALL_SIM_GATE`）。
+- 事实抽取：规则改四元组 `(predicate, domain, keywords, direction)`；`allergy` 用 `before` 取关键词前的主体，`_OBJ_PREFIX` 剥离“我/对/吃了/记一下/是不是”等前缀；问句（是不是/是否/吗/？）不写事实。
+- 上下文：事实用中文标签渲染（称呼/过敏源/偏好/习惯…），并单独保证 `name` 进上下文，避免 12 条偏好把称呼挤掉。
+- 实测（`scripts/memory_eval.py`，24 条语料 + 8 条噪声 + 10 问句）：关键词 R@1 60%、向量 90%、混合 **R@1 100% / R@3 100% / MRR 1.00 / 噪声 0.10**；约 1ms/句。另一套 `scripts/eval_memory.py`（39 条语料 + 15 问句）hit@1 也 100%，用于防小样本过拟合；仍不代表真实聊天通用，扩到 50+ 真实记录后需复测。
 
 ### 11.3 已落地的约束
 

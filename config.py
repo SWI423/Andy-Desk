@@ -1,4 +1,4 @@
-"""
+﻿"""
 Andy（Baymax_pro） 配置中心
 - 所有路径基于项目根目录计算，项目移动后无需改代码
 - 密钥走 .env（不入库）
@@ -41,6 +41,12 @@ EMBED_MARGIN = float(os.getenv("EMBED_MARGIN", "0.06"))   # 只保留靠近最�
 EMBED_BACKFILL_MAX = int(os.getenv("EMBED_BACKFILL_MAX", "400"))  # 单次后台补向量上限
 RRF_K = int(os.getenv("RRF_K", "60"))                     # RRF 平滑常数
 KEYWORD_TOPK = int(os.getenv("KEYWORD_TOPK", "10"))       # 关键词侧候选条数
+EMBED_MIN_CORPUS = int(os.getenv("EMBED_MIN_CORPUS", "8"))      # 少于这么多条时不做去均值
+EMBED_SMALL_SCORE = float(os.getenv("EMBED_SMALL_SCORE", "0.45"))  # 小语料下未中心化的余弦下限
+RECENCY_HALF_LIFE_DAYS = float(os.getenv("RECENCY_HALF_LIFE_DAYS", "120"))  # 记忆衰减半衰期
+RECENCY_MIN_WEIGHT = float(os.getenv("RECENCY_MIN_WEIGHT", "0.35"))         # 衰减下限，避免老事彻底消失
+RECALL_SIM_GATE = float(os.getenv("RECALL_SIM_GATE", "0.80"))               # 只保留接近最高语义分的候选
+RECALL_INTENT_BOOST = float(os.getenv("RECALL_INTENT_BOOST", "0.08"))       # 问句与内容同主题时的小幅加权
 
 # === 领域定义（三线）===
 DOMAINS = {

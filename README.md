@@ -1,4 +1,4 @@
-# Andy（Baymax_pro）
+﻿# Andy（Baymax_pro）
 
 个人管理助手，管三件事：**学习、工作、生活**。
 桌面窗口 + 对话 + function calling，能力按"注册表"扩展。
@@ -58,8 +58,13 @@ python scripts/smoke_core.py            # 核心链路（独立库 data/smoke_<�
 python scripts/smoke_core.py --no-llm   # 只测本地逻辑，不调模型、不联网
 python scripts/smoke_gui.py             # GUI 全流程 + 截图（独立库）
 python scripts/check_retrieval.py       # 检索对照：关键词 vs 向量 vs 混合（独立库）
+python scripts/functional_audit.py      # 50 项离线功能审计（独立库，不调模型）
+python scripts/memory_eval.py           # 记忆检索评测（R@1/R@3/MRR/噪声，会调 embedding）
+python scripts/eval_memory.py --variant hybrid   # 扩展复核（39 条语料 / 15 问句）
+python scripts/task_eval.py             # 18 个任务场景评测（真调模型，独立库）
+python scripts/chat_flow.py             # 11 轮连续对话流程（真调模型，独立库）
 python scripts/backfill_embeddings.py --status   # 查看向量索引状态
-python -m pytest tests -q               # 23 项单测
+python -m pytest tests -q               # 46 项单测
 ```
 
 ---
@@ -157,7 +162,12 @@ scheduler（30s 心跳 → 到点回调 → 窗口浮层）
 
 | 检查 | 方式 | 结果 |
 |---|---|---|
-| 单测 23 项 | `pytest tests -q` | 全部通过（17 项原有 + 6 项向量） |
+| 单测 46 项 | `pytest tests -q` | 全部通过（含 23 项本轮回归） |
+| 离线功能审计 | `scripts/functional_audit.py` | **50/50 PASS**（数据层/任务/提醒/工具/上下文/调度） |
+| 记忆检索评测 | `scripts/memory_eval.py` | 混合 **R@1 100% / R@3 100% / MRR 1.00 / 噪声 0.10** |
+| 记忆扩展复核 | `scripts/eval_memory.py --variant hybrid` | 39 条语料 / 15 问句 **hit@1 100%、MRR 1.00** |
+| 任务场景评测 | `scripts/task_eval.py` | 18 场景 **19/19 PASS**（真调模型） |
+| 多轮连续对话 | `scripts/chat_flow.py` | 11 轮 **4/4 PASS** |
 | 向量索引 | `scripts/check_retrieval.py` | 8 条语料全部建索引；换说法"证的事"由向量召回 |
 | 检索降级 | 单测 `test_fallback_when_embedding_down` | 向量不可用时仍按关键词召回，不报错 |
 | 数据层打通 | `smoke_core.py --no-llm` | 建任务/更新/概览/拆解/提醒/记忆/工具直调全部正常 |
@@ -166,5 +176,6 @@ scheduler（30s 心跳 → 到点回调 → 窗口浮层）
 | 多轮工具（先查再改） | `scripts/check_multi_tool.py` | "模电实验报告我做完了" → 按标题定位并置 done |
 | GUI 全流程 | `smoke_gui.py` | 建任务 → 发问 → 回 `task_list` 结果 → 提醒浮层 → 截图 |
 | 窗口自检 | `main.py --selftest` | 7 模块健康检查 OK，窗口正常退出 |
+| 并发写 | 8 线程建任务 | 0 错误、8 条全在、无重复 |
 
-未做：大规模回归、并发压测、长时间挂机提醒验证（按约定留到 Demo 验收后统一测试）。
+未完成：长时间挂机跨天、真实到点触发、100 次混合读写压测、多用户/多设备。详细缺陷与修法见 `docs/TEST_REPORT.md`。

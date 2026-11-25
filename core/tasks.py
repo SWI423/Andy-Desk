@@ -42,7 +42,10 @@ def _row(task: dict) -> dict:
 
 def create_task(title: str, domain: str = "life", priority: int = 2, due_at=None,
                 notes: str = "", parent_id: int = None, source: str = "manual") -> dict:
-    """新建任务，返回任务详情（含 id）"""
+    """新建任务，返回任务详情（含 id）
+    - 截止时间写得认不出来时不静默丢弃，带回 due_warning 让 Andy 追问
+    - 同领域同标题的未完成任务不重复建，返回已有那条（duplicate=True）
+    """
     title = (title or "").strip()
     if not title:
         return {"ok": False, "error": "任务标题不能为空"}
@@ -54,6 +57,17 @@ def create_task(title: str, domain: str = "life", priority: int = 2, due_at=None
         priority = 2
     priority = min(max(priority, 1), 3)
     due = normalize_due(due_at)
+    due_warning = None
+    if due_at and due is None:
+        due_warning = f"没看懂截止时间「{due_at}」，任务已先记下，截止时间待确认"
+
+    existing = db.query_one(
+        """SELECT * FROM tasks WHERE title=? AND domain=? AND status<>'done'
+           ORDER BY id DESC LIMIT 1""", (title, domain))
+    if existing and parent_id is None:
+        return {"ok": True, "duplicate": True, "id": existing["id"],
+                "task": _row(existing),
+                "reply_hint": f"「{title}」已经在{_row(existing)['domain_text']}线里了，没有重复创建"}
 
     tid = db.execute(
         """INSERT INTO tasks(title, domain, status, priority, due_at, progress,
@@ -63,7 +77,10 @@ def create_task(title: str, domain: str = "life", priority: int = 2, due_at=None
          db.now_iso(), db.now_iso()))
     db.execute("INSERT INTO task_events(task_id, event_type, payload, ts) VALUES(?,?,?,?)",
                (tid, "created", f"source={source}", db.now_iso()))
-    return {"ok": True, "id": tid, "task": _row(get_task(tid))}
+    result = {"ok": True, "id": tid, "task": _row(get_task(tid))}
+    if due_warning:
+        result["due_warning"] = due_warning
+    return result
 
 
 def get_task(task_id: int):
@@ -153,6 +170,11 @@ def update_task(task_id: int, status: str = None, progress: int = None, due_at=N
         if p == 100 and status is None:
             sets.append("status=?")
             params.append("done")
+        elif p > 0 and status is None and task["status"] == "todo":
+            # 有进度就说明已经开工；模型经常只传 progress，这里按规则补状态
+            sets.append("status=?")
+            params.append("doing")
+            events.append(("status", "todo->doing"))
     if due_at is not None:
         sets.append("due_at=?")
         params.append(normalize_due(due_at))
@@ -193,17 +215,21 @@ def delete_task(task_id: int) -> dict:
 
 
 def add_steps(task_id: int, steps: list) -> dict:
-    """给任务加子步骤（建为子任务）"""
+    """
+    给任务加子步骤（建为子任务）
+    - 最多 6 步（与提示词一致，避免一次拆出十几条把看板刷爆）
+    - 子步骤不继承父任务的截止时间：否则"今日到期"会被一步一条撑成 8 条假警报
+    """
     parent = get_task(task_id)
     if not parent:
         return {"ok": False, "error": "父任务不存在"}
     created = []
-    for s in steps[:8]:
+    for s in steps[:6]:
         s = (s or "").strip()
         if not s:
             continue
         r = create_task(s, domain=parent["domain"], priority=parent["priority"],
-                        due_at=parent["due_at"], parent_id=parent["id"], source="ai")
+                        due_at=None, parent_id=parent["id"], source="ai")
         if r.get("ok"):
             created.append(r["task"])
     return {"ok": True, "count": len(created), "steps": created}

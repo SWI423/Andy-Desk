@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+from console import logger
 from core import db
 
 WEEK_TEXT = {1: "周一", 2: "周二", 3: "周三", 4: "周四", 5: "周五", 6: "周六", 7: "周日"}
@@ -221,17 +222,23 @@ class Scheduler:
                 parts.append("错过：" + "；".join(missed[:5]))
             if late:
                 parts.append("刚到点：" + "；".join(late[:5]))
-            text = "启动时补发提醒（" + " / ".join(parts) + "）"
+            text = " / ".join(parts)
             if len(missed) > 5 or len(late) > 5:
                 text += f" 共 {len(missed) + len(late)} 条"
+            # 前缀由界面层加（"⏰ 补发"），这里只给内容，避免"补发：启动时补发提醒"重复
             self.on_fire({"type": "catch_up", "content": text,
                           "items": missed + late})
 
     def _bump_missed(self, reminder: dict, last_fire: datetime, now: datetime):
+        """
+        统计"错过的次数"：从本该触发的那次开始算，包含它本身。
+        旧算法按天数差减 1，同一小时内错过会算成 0 次，实际漏记。
+        """
+        gap_sec = max((now - last_fire).total_seconds(), 0)
         if reminder["rule_type"] == "daily":
-            n = max((now.date() - last_fire.date()).days - 1, 0)
+            n = int(gap_sec // 86400) + 1
         elif reminder["rule_type"] == "weekly":
-            n = max(((now.date() - last_fire.date()).days - 1) // 7, 0)
+            n = int(gap_sec // (7 * 86400)) + 1
         else:
             n = 1
         db.execute("UPDATE reminders SET missed_count=missed_count+? WHERE id=?",
@@ -258,15 +265,19 @@ class Scheduler:
                 (now.strftime("%Y-%m-%d %H:%M:%S"),))
             for r in due:
                 self._advance(r, now)
-                self.on_fire({
-                    "type": "reminder",
-                    "id": r["id"],
-                    "content": r["content"],
-                    "rule": rule_text(r["rule_type"], r["rule_expr"]),
-                    "task_id": r["task_id"],
-                })
+                try:
+                    self.on_fire({
+                        "type": "reminder",
+                        "id": r["id"],
+                        "content": r["content"],
+                        "rule": rule_text(r["rule_type"], r["rule_expr"]),
+                        "task_id": r["task_id"],
+                    })
+                except Exception as e:
+                    # 界面回调失败不能连累后续提醒；记录后继续
+                    logger.warning("[scheduler] 提醒回调失败 id=%s: %s", r["id"], e)
         except Exception as e:  # 心跳不允许因单条异常整体停摆
-            print(f"[scheduler] tick error: {e}")
+            logger.error("[scheduler] tick error: %s", e)
         finally:
             self._lock.release()
 

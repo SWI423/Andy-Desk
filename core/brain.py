@@ -34,29 +34,80 @@ def current_time_text() -> str:
 # ---------- 时间硬拦截 ----------
 
 _REMINDER_KW = ["提醒我", "叫我", "别忘了", "定时"]
-_TIME_PAT = re.compile(
-    r"(\d{1,2}[:：]\d{2}|\d{1,2}\s*[点時时]|今天|明天|后天|大后天|每天|每周|每星期|"
-    r"周[一二三四五六日天]|下周|下个月|\d{4}-\d{1,2}-\d{1,2}|\d{1,2}月\d{1,2}[日号])"
-)
+# 只认"钟点"，不认日期：光说"明天"没法定提醒，必须追问几点
+_CLOCK_PAT = re.compile(
+    r"(\d{1,2}\s*[:：]\s*\d{2}|\d{1,2}\s*[点時时]|[一二三四五六七八九十两]\s*[点時时]|"
+    r"半\s*[个小]?时|一刻|整点)")
 
 
 def needs_time_clarify(text: str) -> bool:
-    """说了要提醒但没给任何时间 -> 只问一句，不调模型"""
-    return any(k in text for k in _REMINDER_KW) and not _TIME_PAT.search(text)
+    """
+    说了要提醒但没给钟点 -> 只问一句，不调模型
+    注意：只给"明天/下周"这类日期也算没给时间，模型很容易自己编个 09:00
+    """
+    return any(k in text for k in _REMINDER_KW) and not _CLOCK_PAT.search(text)
+
+
+# ---------- 动作意图与"假报喜"拦截 ----------
+
+# 这些说法说明模型在宣称已经落库，必须真有成功的写工具，否则就是骗用户
+_CLAIM_PAT = re.compile(
+    r"已(经)?(设置|设好|记下|记好|记住|记录|创建|新建|添加|加入|标记|更新|改成|完成|安排|删除|取消|存|办|弄|搞)"
+    r"|(设置|记下|记好|记住|记录|创建|新建|添加|加入|标记|更新|改|完成|安排|删除|取消|存|办|弄|搞定)了")
+# 未来式承诺：没命中“已…”也可能是在说“我会每天叫你”，同样要求真落库
+_PROMISE_PAT = re.compile(
+    r"(会|每天|以后|到时|到时候|明早|明天)[^。！？]{0,12}(叫你|喊你|提醒你|通知你|设好闹钟|定好闹钟)"
+    r"|(叫你|喊你)[^。！？]{0,6}(起床|起来)")
+_NEGATIVE_PAT = re.compile(r"不会|没法|不能|做不到|没记|没设|失败")
+_WRITE_TOOLS = {"task_create", "task_update", "task_breakdown",
+                "memory_save", "reminder_create"}
+
+
+def force_tool_for(text: str):
+    """意图很明确时直接锁定工具名，避免模型自作主张换成闲聊"""
+    t = text or ""
+    if any(k in t for k in _REMINDER_KW) and _CLOCK_PAT.search(t):
+        return "reminder_create"
+    if any(k in t for k in ("做完了", "完成了", "开始了", "做到一半", "进度", "取消")):
+        return "task_update"
+    if any(k in t for k in ("怎么样了", "进展", "到哪了", "完成了没", "做完了没")):
+        return "task_list"
+    # 建任务不做强制：模型自己排 due/domain 更稳，出错由"假报喜"兜底
+    if any(k in t for k in ("过敏", "喜欢", "讨厌", "习惯", "偏好", "我叫", "我的名字")):
+        return None
+    return None
+
+
+def looks_like_write(text: str) -> bool:
+    """用户这句话是不是要求落库（决定首轮是否强制模型调工具）"""
+    return force_tool_for(text) is not None
+
+
+def claims_done(reply: str) -> bool:
+    reply = reply or ""
+    if reply.strip().endswith(("？", "?")) or _NEGATIVE_PAT.search(reply):
+        return False
+    return bool(_CLAIM_PAT.search(reply) or _PROMISE_PAT.search(reply))
+
+
+def _has_write_success(results: list) -> bool:
+    return any(r["name"] in _WRITE_TOOLS and r["result"].get("ok") is True
+               for r in results)
 
 
 # ---------- 模型调用 ----------
 
-def _stream_once(messages: list, on_chunk=None):
+def _stream_once(messages: list, on_chunk=None, tool_choice="auto"):
     """
     一次流式调用
     返回 (文本, 工具调用列表[{id,name,arguments}])
+    tool_choice="required" 用于动作意图明确的场景，避免模型只说不做
     """
     stream = _client().chat.completions.create(
         model=ZHIPU_CHAT_MODEL,
         messages=messages,
         tools=tools.TOOLS,
-        tool_choice="auto",
+        tool_choice=tool_choice,
         stream=True,
         temperature=0.5,
     )
@@ -133,8 +184,9 @@ def ask_baymax(user_input: str, on_chunk=None, session_id: str = SESSION_ID) -> 
     history = memory.recent_events(limit=HISTORY_LIMIT * 2, session_id=session_id)
     ctx = memory.build_context(text)
     uid = memory.log_event("user", text)
+    fact_written = False
     try:
-        memory.extract_facts(text, source_event_id=uid)
+        fact_written = bool(memory.extract_facts(text, source_event_id=uid))
     except Exception as e:
         logger.warning("[brain] 事实抽取失败: %s", e)
     # 后台给老事件补向量，不阻塞本轮对话
@@ -155,31 +207,99 @@ def ask_baymax(user_input: str, on_chunk=None, session_id: str = SESSION_ID) -> 
 
     # 4. 工具循环
     called, results, reply, err = [], [], "", None
+    executed = {}                 # 同一轮里重复调用同工具同参数，直接复用结果
+    force_name = force_tool_for(text)
+    write_intent = force_name is not None
+    # 只有本轮要求写入时，才检查"声称已办好"；查询类回复里出现"已经设置"不算
+    expect_write = write_intent or any(k in text for k in ("记住", "记一下", "记下", "帮我记"))
+    # 动作意图明确时首轮锁定工具；同时不流式输出，避免"先报喜后纠正"
+    stream_cb = None if write_intent else on_chunk
+
+    def first_choice():
+        if force_name:
+            return {"type": "function", "function": {"name": force_name}}
+        return "auto"
+
+    def run_calls(calls):
+        """执行一批工具调用，返回 (是否全是重复调用)"""
+        dup = 0
+        for idx, c in enumerate(calls):
+            name = c["name"]
+            if not name:
+                continue
+            args = _parse_args(c["arguments"])
+            sig = (name, json.dumps(args, ensure_ascii=False, sort_keys=True))
+            if sig in executed:
+                # 模型陷入"再调一次"的循环：不重复执行写操作，把上次结果回给它
+                dup += 1
+                result = dict(executed[sig], note="这步刚才已经执行过，结果同上")
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": c["id"] or f"call_{idx}",
+                    "content": json.dumps(result, ensure_ascii=False),
+                })
+                logger.info("[tool] %s 重复调用已跳过", name)
+                continue
+            result = tools.call_tool(name, args)
+            if result.get("ok", True) is not False:
+                executed[sig] = result      # 只缓存成功结果；失败允许重试
+            called.append(name)
+            results.append({"name": name, "args": args, "result": result})
+            logger.info("[tool] %s %s -> %s", name, args, result.get("ok"))
+            messages.append({
+                "role": "tool",
+                "tool_call_id": c["id"] or f"call_{idx}",
+                "content": json.dumps(result, ensure_ascii=False),
+            })
+        return dup > 0 and dup == len([c for c in calls if c["name"]])
+
     try:
         for rnd in range(MAX_TOOL_ROUNDS):
-            content, calls = _stream_once(messages, on_chunk=on_chunk)
+            choice = first_choice() if rnd == 0 else "auto"
+            content, calls = _stream_once(messages, on_chunk=stream_cb, tool_choice=choice)
+            logger.info("[brain] round=%s choice=%s calls=%s content_len=%s",
+                        rnd, choice, [c["name"] for c in calls], len(content or ""))
             if not calls:
                 reply = content
                 break
 
             messages.append(_assistant_tool_msg(content, calls))
-            for c in calls:
-                name = c["name"]
-                if not name:
-                    continue
-                args = _parse_args(c["arguments"])
-                result = tools.call_tool(name, args)
-                called.append(name)
-                results.append({"name": name, "args": args, "result": result})
-                logger.info("[tool] %s %s -> %s", name, args, result.get("ok"))
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": c["id"] or f"call_{len(called)}",
-                    "content": json.dumps(result, ensure_ascii=False),
-                })
+            all_dup = run_calls(calls)
+            if all_dup:
+                reply = "这步我刚才已经做过了，结果在上面；还有别的要安排的吗？"
+                break
         else:
             # 循环用尽仍有工具调用
             reply = "我先按你说的办了几步，剩下的我们下一句继续。"
+
+        # 4.1 假报喜拦截：回复说"已办好"但没有任何成功的写操作 -> 丢历史重试
+        # 提醒意图被锁了工具却零调用，即使回复只是"每天8:30叫你"这种承诺，也算没落地
+        forced_no_call = (force_name == "reminder_create" and not results
+                          and not (reply or "").strip().endswith(("？", "?")))
+        if (expect_write and (claims_done(reply) or forced_no_call)
+                and not (_has_write_success(results) or fact_written)):
+            logger.warning("[brain] 检测到未落库就宣称完成，去历史重试：%s", reply[:80])
+            # 多轮历史会把模型带偏；只留稳定前缀 + 当前时间/上下文 + 这一句
+            messages = [m for m in messages[:2]] + [{
+                "role": "system",
+                "content": ("这一轮你还没有调用任何工具。必须真实调用合适的工具把事办成；"
+                            "缺少信息就说明缺什么并提问，不准再说“已设置/已记下/已完成”。"),
+            }, {"role": "user", "content": text}]
+            for i in range(2):
+                content, calls = _stream_once(
+                    messages, on_chunk=None,
+                    tool_choice=(first_choice() if i == 0 else "auto")
+                    if force_name else "required")
+                if not calls:
+                    reply = content
+                    break
+                messages.append(_assistant_tool_msg(content, calls))
+                if run_calls(calls):
+                    reply = "这一步刚才已经办过了，结果在上一条里。"
+                    break
+            if expect_write and claims_done(reply) and not (_has_write_success(results) or fact_written):
+                reply = ("抱歉，刚才那条我只是嘴上说办好了，实际没写进系统。"
+                         "你再说一次，我马上用工具真正办。")
 
     except Exception as e:
         logger.error("[brain] 模型调用失败: %s", e)

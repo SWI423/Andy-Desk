@@ -266,7 +266,8 @@ class TaskPage(QWidget):
         total = len(tasks.list_tasks(domain=self.domain, include_done=True))
         done = len([t for t in tasks.list_tasks(domain=self.domain, include_done=True)
                     if t["status"] == "done"])
-        self.count_label.setText(f"未完成 {len(rows)} 项 · 累计 {total} 项（完成 {done}）")
+        open_n = len(tasks.list_tasks(domain=self.domain, include_done=False))
+        self.count_label.setText(f"未完成 {open_n} 项 · 累计 {total} 项（完成 {done}）")
 
     def current_id(self):
         r = self.table.currentRow()
@@ -395,8 +396,11 @@ class ReminderPage(QWidget):
     def toggle(self):
         rid = self.current_id()
         if not rid:
+            QMessageBox.information(self, "提示", "先选中一条提醒")
             return
         r = db.query_one("SELECT enabled FROM reminders WHERE id=?", (rid,))
+        if not r:
+            return
         res = scheduler.set_enabled(rid, not bool(r["enabled"]))
         if not res.get("ok"):
             QMessageBox.warning(self, "操作失败", res.get("error", ""))
