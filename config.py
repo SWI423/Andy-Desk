@@ -1,43 +1,62 @@
 """
-大白 Baymax_pro 配置模块
-集中管理所有配置项，从环境变量和 .env 文件加载
+大白 Baymax_pro 配置中心
+- 所有路径基于项目根目录计算，项目移动后无需改代码
+- 密钥走 .env（不入库）
 """
 
 import os
 from dotenv import load_dotenv
 
-# 加载 .env 文件
-load_dotenv()
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(BASE_DIR, ".env"))
 
-
-# === 智谱 AI 配置 ===
+# === 智谱 AI ===
 ZHIPU_API_KEY = os.getenv("ZHIPU_API_KEY", "")
 ZHIPU_BASE_URL = os.getenv("ZHIPU_BASE_URL", "https://open.bigmodel.cn/api/paas/v4")
 ZHIPU_CHAT_MODEL = os.getenv("ZHIPU_CHAT_MODEL", "glm-4-flash")
 ZHIPU_EMBED_MODEL = os.getenv("ZHIPU_EMBED_MODEL", "embedding-3")
 
-# === 数据库 ===
-DB_PATH = os.getenv("DB_PATH", "data/baymax.db")
+# === 路径（全部绝对化，基于 BASE_DIR）===
+DATA_DIR = os.path.join(BASE_DIR, os.getenv("DATA_DIR", "data"))
+LOG_DIR = os.path.join(BASE_DIR, os.getenv("LOG_DIR", "logs"))
+DB_PATH = os.path.join(DATA_DIR, "baymax.db")
 
 # === 日志 ===
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
-LOG_DIR = os.getenv("LOG_DIR", "logs")
+
+# === 应用参数 ===
+APP_NAME = "大白"
+SESSION_ID = os.getenv("SESSION_ID", "default")   # 单用户，先用固定会话
+MAX_TOOL_ROUNDS = 4                               # 工具循环上限，防死循环
+HISTORY_LIMIT = 6                                 # L1 工作记忆保留轮数
+CONTEXT_TOKEN_BUDGET = 2500                       # 记忆注入部分 token 上限（估算）
+
+# === 领域定义（三线）===
+DOMAINS = {
+    "study": "学习",
+    "work": "工作",
+    "life": "生活",
+}
+DOMAIN_KEYS = list(DOMAINS.keys())
+
+
+def ensure_dirs():
+    """确保运行目录存在"""
+    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(LOG_DIR, exist_ok=True)
 
 
 def check_config() -> bool:
-    """检查关键配置是否就绪"""
-    if not ZHIPU_API_KEY:
-        print("[警告] 未配置 ZHIPU_API_KEY，请复制 .env.example 为 .env 并填入")
-        return False
-    return True
+    """关键配置是否就绪"""
+    return bool(ZHIPU_API_KEY)
 
 
 if __name__ == "__main__":
-    # 健康检查：打印配置状态
+    ensure_dirs()
     print("=== 大白配置检查 ===")
+    print(f"项目根目录: {BASE_DIR}")
     print(f"智谱 API Key: {'已配置' if ZHIPU_API_KEY else '未配置'}")
     print(f"对话模型: {ZHIPU_CHAT_MODEL}")
-    print(f"向量模型: {ZHIPU_EMBED_MODEL}")
-    print(f"数据库路径: {DB_PATH}")
-    print(f"日志级别: {LOG_LEVEL}")
-    print(f"配置检查: {'通过' if check_config() else '未通过'}")
+    print(f"数据库: {DB_PATH}")
+    print(f"日志目录: {LOG_DIR}")
+    print(f"领域: {DOMAINS}")

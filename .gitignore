@@ -6,9 +6,8 @@ __pycache__/
 dist/
 build/
 
-# 数据
-data/*.db
-data/*.db-journal
+# 数据（SQLite 与冒烟测试库都不入库）
+data/
 
 # 日志
 logs/

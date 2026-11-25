@@ -357,3 +357,58 @@ CREATE INDEX IF NOT EXISTS idx_reminder_next ON reminders(next_fire_at, enabled)
 | 日期 | 变更 |
 |---|---|
 | 2026-11-25 | 初版。基于用户《记忆优化方案》重构，补充"先蒸馏后摘要""稳定前缀前置""按领域分区"三条决策；新增任务/提醒表以配合产品定位调整 |
+| 2026-11-25 | 追加 §11 落地记录：MVP 实际实现与原方案的偏差及原因（ADR-003~007） |
+
+---
+
+## 11. 落地实现记录（MVP 实际实现）
+
+### 11.1 文件映射
+
+| 设计项 | 落地文件 | 说明 |
+|---|---|---|
+| 建表 / 连接 / 事务 | `core/db.py` | WAL + 单连接 + 全局写锁；`init_db()` 幂等 |
+| L2 事件流水 | `core/memory.py::log_event` | 用户/AI 每条都落，append-only |
+| L3 事实蒸馏 | `core/memory.py::extract_facts` | 规则抽取 + 同 predicate 去重 |
+| 上下文组装 | `core/memory.py::build_context` | facts > overview > recall，按预算裁剪 |
+| 任务层 | `core/tasks.py` | 三线、子任务、进度、task_events 轨迹、今日概览 |
+| 提醒层 | `core/scheduler.py` | once/daily/weekly + 启动补发 + missed_count |
+| 工具层 | `core/tools.py` | 8 个工具的 schema + 注册表 + 兜底错误收敛 |
+| 对话核心 | `core/brain.py` | 稳定前缀 → 动态上下文 → 历史 → 当前输入；工具循环 ≤4 轮 |
+| 桌面层 | `desktop/main_window.py` | 三线看板 + 提醒页 + 流式对话 + 提醒浮层 |
+
+### 11.2 与原方案的偏差（ADR-003 ~ ADR-007）
+
+**ADR-003：MVP 检索用"字符重合度打分"，不逐条调 embedding。**
+- 原方案：向量 top_k=3。
+- 实际：`memory.search_events()` 对最近 300 条事件做中文字符/英文词重合度打分，阈值 0.35，取 top 3，并排除已注入的最近窗口。
+- 理由：每条消息都调 embedding 会多一次 API 往返（延迟、额度），而当前语料量小、问题多为短期事务；规则检索零成本、可解释。
+- 升级触发条件：事实召回率 <90%，或事件量 >2000 条 → 接 `embedding-3` + 本地缓存 + RRF 融合（原方案第二阶段）。
+- 代价：跨句同义改写（"交报告" vs "提交文档"）召回不到。
+
+**ADR-004：调度用"30 秒心跳轮询 reminders 表"，不用每条提醒一个 APScheduler job。**
+- 理由：单一事实来源。若 jobstore 与业务表各存一份状态，重启后容易出现"表里有、job 没有"或重复触发。现在 APScheduler 只负责心跳，下次触发时间由 `next_fire_at` 一个字段决定。
+- 补发：启动时把 `next_fire_at` 已过的提醒合并成一条"错过提醒"通知，最多列 5 条，避免刷屏。
+- 代价：最小触发精度 30 秒；程序关闭时不响（已在提醒页写明）。
+
+**ADR-005：事实抽取先用规则，不做每轮 LLM 抽取。**
+- 规则表在 `memory.FACT_RULES`（称呼、过敏、慢性病、考试/截止锚点、偏好、作息）。
+- 理由：每轮多一次 LLM 调用成本高；规则误抽可预测、可测试。
+- 升级：规则漏抽时，用后台异步任务补抽（不阻塞当轮对话），并在 `confidence` 上区分。
+
+**ADR-006：对话直连 `openai` SDK，不用 LangChain。**
+- V1 用 `langchain_openai.ChatOpenAI` + LCEL；V2 去掉这层。
+- 理由：流式 + 工具调用的增量拼接、错误收敛、超时都需要自己可控；少一层框架，代码可读、可教学。
+- 兼容：智谱接口与 OpenAI 兼容，`base_url` 指向 `open.bigmodel.cn/api/paas/v4`。
+
+**ADR-007：工具层用"schema 列表 + 注册表"，作为扩展性主入口。**
+- 新增一个能力 = `TOOLS` 加一条 schema + `TOOL_REGISTRY` 加一个函数，`brain` 不改。
+- 未做 MCP / FastAPI 适配：按 PRD 的 ADR-002，本期不引入 HTTP 服务；后续把工具实现替换成"HTTP 调用"或"MCP client 调用"即可，schema 与对话层不变。
+
+### 11.3 已落地的约束
+
+- 时间硬拦截在调模型之前：说了"提醒"但没有任何时间词，直接反问，不消耗 token。
+- 当前时间每轮注入，模型必须基于它换算相对日期。
+- 所有工具异常收敛为 `{"ok": false, "error": ...}` 回给模型，不打断整轮。
+- token 预算 2500，实测组装结果约 35~80 token（MVP 语料少，离上限很远）。
+- 所有路径基于 `BASE_DIR`，项目目录搬迁不需要改代码。
