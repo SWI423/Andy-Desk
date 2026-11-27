@@ -324,7 +324,7 @@ MCP 让 Andy 用“插头”的方式接外部能力，而不是每加一个功�
 
 | 检查 | 方式 | 结果 |
 |---|---|---|
-| 克隆复跑 | 从 GitHub 重新 clone 后 `pytest tests -q` | **59/59 PASS**（提交 `64598b9`，2026-11-27） |
+| 克隆复跑 | 从 GitHub 重新 clone 后 `pytest tests -q` | **84/84 PASS**（提交 `a97b9e4`，2026-11-27） |
 | 本地全量 | D 盘与开发副本 `pytest tests -q` | **84/84 PASS**（含 MCP 7 项、语音与语种解绑 15 项、基本问答 16 项） |
 | 单测 | `pytest tests -q` | 本地 84 项全部通过 |
 | 离线功能审计 | `scripts/functional_audit.py` | **50/50 PASS** |
