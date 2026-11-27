@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QPushButton, QLineEdit, QTextBrowser,
     QLabel, QDialog, QFormLayout, QComboBox, QDateTimeEdit, QTimeEdit,
     QCheckBox, QTextEdit, QMessageBox, QAbstractItemView, QHeaderView,
-    QStackedWidget, QApplication,
+    QStackedWidget, QApplication, QDialogButtonBox,
 )
 
 from config import APP_NAME, DOMAINS, ensure_dirs
@@ -429,6 +429,46 @@ class ReminderPage(QWidget):
             self.changed.emit()
 
 
+# ============ 音色选择 ============
+
+class VoiceDialog(QDialog):
+    """两层音色：在线按语言选（中/英） + 离线 Windows 系统语音"""
+
+    MODES = [
+        ("auto", "自动（中文回答用中文音色，英文回答用 Andrew）"),
+        ("zh", "在线 · 中文（zh-CN-YunxiNeural）"),
+        ("en", "在线 · 英文（en-US-AndrewNeural）"),
+        ("offline", "离线 · Windows 系统语音（断网也能用）"),
+    ]
+
+    def __init__(self, current: str = "auto", parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("选择 Andy 的音色")
+        self.setMinimumWidth(460)
+        form = QFormLayout(self)
+        self.combo = QComboBox()
+        for key, label in self.MODES:
+            self.combo.addItem(label, key)
+        idx = max(0, self.combo.findData(current))
+        self.combo.setCurrentIndex(idx if idx >= 0 else 0)
+        form.addRow("音色", self.combo)
+        note = QLabel("在线音色走 edge-tts，需要联网，音质更自然；"
+                      "离线音色走 Windows SAPI，不依赖网络。")
+        note.setWordWrap(True)
+        form.addRow(note)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok |
+            QDialogButtonBox.StandardButton.Cancel)
+        buttons.button(QDialogButtonBox.StandardButton.Ok).setText("确定")
+        buttons.button(QDialogButtonBox.StandardButton.Cancel).setText("取消")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+
+    def mode(self) -> str:
+        return self.combo.currentData() or "auto"
+
+
 # ============ 主窗口 ============
 
 class BaymaxWindow(QMainWindow):
@@ -459,6 +499,11 @@ class BaymaxWindow(QMainWindow):
         self.settings = QSettings("AndyDesk", "Andy")
         voice_enabled = self.settings.value("tts_enabled", voice.speaker.enabled, type=bool)
         voice.speaker.set_enabled(voice_enabled)
+        voice.set_voice_mode(self.settings.value("voice_mode", "auto", type=str))
+        if voice_enabled:
+            voice.speaker.warmup()
+        self._voice_feed = voice.StreamFeed()
+        self._voice_stream_chars = 0
 
         self._worker = None
         self._build_ui()
@@ -555,11 +600,16 @@ class BaymaxWindow(QMainWindow):
         self.voice_check.setToolTip("打开后 Andy 会把回复读出来")
         self.voice_check.setChecked(voice.speaker.enabled)
         self.voice_check.toggled.connect(self._toggle_voice)
+        self.voice_btn = QPushButton("音色")
+        self.voice_btn.setObjectName("ghost")
+        self.voice_btn.setToolTip("在线中/英音色，或离线系统语音")
+        self.voice_btn.clicked.connect(self._choose_voice)
         self.send_btn = QPushButton("发送")
         self.send_btn.setObjectName("primary")
         self.send_btn.clicked.connect(self.send)
         input_row.addWidget(self.input, 1)
         input_row.addWidget(self.voice_check)
+        input_row.addWidget(self.voice_btn)
         input_row.addWidget(self.send_btn)
         rv.addLayout(input_row)
         split.addWidget(right)
@@ -626,6 +676,8 @@ class BaymaxWindow(QMainWindow):
             return
         if voice.speaker.enabled:
             voice.speaker.stop()
+        self._voice_feed = voice.StreamFeed()
+        self._voice_stream_chars = 0
         self.input.clear()
         self._append_user(text)
         self.chat.append(f"<p style='color:#0f766e'><b>{APP_NAME}</b></p>")
@@ -647,13 +699,29 @@ class BaymaxWindow(QMainWindow):
         self.chat.setTextCursor(cursor)
         self.chat.insertPlainText(text)
         self.chat.verticalScrollBar().setValue(self.chat.verticalScrollBar().maximum())
+        if voice.speaker.enabled and text:
+            remaining = max(0, voice.TTS_MAX_CHARS - self._voice_stream_chars)
+            if remaining:
+                for sentence in self._voice_feed.feed(text[:remaining]):
+                    voice.speaker.speak(sentence, interrupt=False)
+            self._voice_stream_chars += len(text)
 
     # ---- 语音 ----
+    def _choose_voice(self):
+        dlg = VoiceDialog(voice.current_mode(), self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        mode = voice.set_voice_mode(dlg.mode())
+        self.settings.setValue("voice_mode", mode)
+        if voice.speaker.enabled:
+            voice.speaker.speak(voice.sample_text())
+
     def _toggle_voice(self, on: bool):
         voice.speaker.set_enabled(on)
         self.settings.setValue("tts_enabled", bool(on))
         if on:
-            voice.speaker.speak("语音已打开。")
+            voice.speaker.warmup()
+            voice.speaker.speak(voice.sample_text())
 
     # ---- MCP 写入确认（后台线程 → 主线程）----
     def _confirm_mcp(self, server: str, tool: str, args: dict) -> bool:
@@ -693,7 +761,11 @@ class BaymaxWindow(QMainWindow):
         self.chat.append("")
         reply = (res.get("reply") or "").strip()
         if reply and not res.get("error") and voice.speaker.enabled:
-            voice.speaker.speak(reply)
+            if self._voice_stream_chars:
+                for sentence in self._voice_feed.flush():
+                    voice.speaker.speak(sentence, interrupt=False)
+            else:
+                voice.speaker.speak(reply)
 
     # ---- 提醒回调（调度器线程 -> Qt 主线程）----
     def _on_reminder(self, payload: dict):

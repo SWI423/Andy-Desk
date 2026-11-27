@@ -57,11 +57,20 @@ MCP_ALLOW_WRITE = os.getenv("MCP_ALLOW_WRITE", "0").lower() in ("1", "true", "on
 
 # === 语音（TTS）===
 TTS_ENABLED = os.getenv("TTS_ENABLED", "0").lower() in ("1", "true", "on")
-TTS_VOICE = os.getenv("TTS_VOICE", "zh-CN-YunxiNeural")   # edge-tts 中文男声
-TTS_RATE = os.getenv("TTS_RATE", "-8%")                   # 稍慢一点，便于听清
+# TTS_VOICE 留空 = 按文本语言自动选（中文 ZH / 英文 EN）；填了则强制使用该音色
+TTS_VOICE = os.getenv("TTS_VOICE", "").strip()
+TTS_VOICE_ZH = os.getenv("TTS_VOICE_ZH", "zh-CN-YunxiNeural")   # 中文男声
+TTS_VOICE_EN = os.getenv("TTS_VOICE_EN", "en-US-AndrewNeural")  # 用户选定的英文男声
+TTS_RATE = os.getenv("TTS_RATE", "-18%")                        # 强制音色时的语速
+TTS_RATE_ZH = os.getenv("TTS_RATE_ZH", "-8%")
+TTS_RATE_EN = os.getenv("TTS_RATE_EN", "-18%")
+TTS_PITCH = os.getenv("TTS_PITCH", "-10Hz")                     # 强制音色时的音调
+TTS_PITCH_ZH = os.getenv("TTS_PITCH_ZH", "+0Hz")
+TTS_PITCH_EN = os.getenv("TTS_PITCH_EN", "-10Hz")
 TTS_VOLUME = os.getenv("TTS_VOLUME", "+0%")
-TTS_MAX_CHARS = int(os.getenv("TTS_MAX_CHARS", "240"))    # 单次播报上限，避免长回答念太久
-TTS_SAPI_RATE = int(os.getenv("TTS_SAPI_RATE", "175"))    # pyttsx3 兜底语速
+TTS_MAX_CHARS = int(os.getenv("TTS_MAX_CHARS", "240"))          # 单次播报上限，避免长回答念太久
+TTS_CHUNK_CHARS = int(os.getenv("TTS_CHUNK_CHARS", "80"))       # 分句合成，降低首句等待
+TTS_SAPI_RATE = int(os.getenv("TTS_SAPI_RATE", "175"))          # pyttsx3 兜底语速
 TTS_SAPI_VOLUME = float(os.getenv("TTS_SAPI_VOLUME", "0.9"))
 
 # === 领域定义（三线）===

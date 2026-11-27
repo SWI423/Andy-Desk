@@ -80,7 +80,7 @@
 |---|---|---|---|
 | S1 | **MCP 客户端** | 支持 stdio 与 HTTP/SSE 两种传输，动态加载外部工具 | 能列出远端工具、调用成功、失败可诊断 |
 | S2 | **对接自建 FastAPI 服务** | 把已有 FastAPI 项目的能力接入为Andy的工具 | Andy能读/写该服务的任务数据 |
-| S3 | **语音输出 TTS** | edge-tts + `en-US-AndrewNeural`（rate -18%，pitch -10Hz） | 回复后自动播放，可开关 |
+| S3 | **语音输出 TTS** | 中文 `zh-CN-YunxiNeural`（-8%）；英文 `en-US-AndrewNeural`（-18%、-10Hz）；可自动/在线中/在线英/离线 SAPI | 流式按句播放，可开关、可选音色 |
 | S4 | **语音输入 ASR**（可选） | 按住说 → 转文字 | 常见短句可用；不可用不影响文字流程 |
 | S5 | **健康陪伴模块（保留）** | 沿用 V1：健康记录、医疗知识库 RAG、健康趋势、就医提示 | 说不适→记录→检索→建议，闭环可复现 |
 | S6 | **微信代发提醒（人工审查）** | 到点生成内容 → 打开微信 → 粘贴 → 用户手动发送 | 绝不自动发送；粘贴内容可编辑 |
@@ -194,7 +194,7 @@
 | GUI | PyQt6 | 简约窗口、托盘、弹窗 | 已装 6.11 |
 | 存储 | SQLite（WAL 模式） | 记忆、任务、提醒 | 零配置、单文件 |
 | 调度 | APScheduler | 定时触发、cron、补发 | 新增，需持久化 jobstore |
-| 语音 | edge-tts（`en-US-AndrewNeural`, rate -18%, pitch -10Hz） | TTS | 联网调用公开接口，个人非商用 |
+| 语音 | edge-tts（中文 `zh-CN-YunxiNeural` -8%；英文 `en-US-AndrewNeural` -18%、-10Hz） | TTS | 联网调用公开接口，个人非商用 |
 | MCP | Python MCP SDK（stdio / HTTP-SSE） | 外部工具接入 | 包名与传输方式实现前核对官方文档 |
 | 日志 | logging + TimedRotatingFileHandler | 终端+文件双写 | 沿用 V1 |
 | 测试 | pytest | 单元 + 功能验证 | 已装 |

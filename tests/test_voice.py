@@ -28,6 +28,82 @@ def test_clean_truncates():
     assert out.endswith("。")
 
 
+def test_split_keeps_sentences_and_limit():
+    text = "第一句在这里。第二句稍微长一点！第三句是问句吗？最后一句。"
+    chunks = voice.split_tts_text(text, max_len=14)
+    assert chunks
+    assert all(len(c) <= 14 for c in chunks)
+    assert "".join(chunks) == text
+
+
+def test_pick_profile_zh_and_en(monkeypatch):
+    monkeypatch.setattr(voice, "TTS_VOICE", "")
+    zh = voice.pick_profile("你好，我是 Andy。")
+    en = voice.pick_profile("Hello, I am Andy.")
+    assert zh["voice"] == voice.TTS_VOICE_ZH and zh["lang"] == "zh"
+    assert en["voice"] == voice.TTS_VOICE_EN and en["lang"] == "en"
+    assert en["pitch"] == voice.TTS_PITCH_EN
+
+
+def test_stream_feed_speaks_first_sentence():
+    feed = voice.StreamFeed()
+    assert feed.feed("你好") == []
+    out = feed.feed("，我是 Andy。今天天气不错")
+    assert out and out[0].startswith("你好")
+    tail = feed.feed("。")
+    assert tail == []
+    assert feed.flush() == ["今天天气不错。"]
+
+
+def test_stream_feed_flush_tail():
+    feed = voice.StreamFeed()
+    out1 = feed.feed("Hello, this is Andy.")
+    out2 = feed.feed(" I am here.")
+    assert out1 == []
+    assert out2 == ["Hello, this is Andy."]
+    assert feed.flush() == ["I am here."]
+
+
+def test_voice_modes_switch():
+    try:
+        assert voice.set_voice_mode("zh") == "zh"
+        assert voice.current_mode() == "zh"
+        assert voice.TTS_VOICE == voice.TTS_VOICE_ZH
+        assert voice.set_voice_mode("en") == "en"
+        assert voice.TTS_VOICE == voice.TTS_VOICE_EN
+        assert voice.set_voice_mode("offline") == "offline"
+        assert voice.speaker.prefer_offline is True
+        assert voice.set_voice_mode("auto") == "auto"
+        assert voice.speaker.prefer_offline is False
+        assert voice.current_mode() == "auto"
+    finally:
+        voice.set_voice_mode("auto")
+
+
+def test_play_edge_splits_and_reports_voice(tmp_path, monkeypatch):
+    played = []
+    sp = voice.Speaker(enabled=True)
+    monkeypatch.setattr(voice, "TTS_VOICE", "")
+    monkeypatch.setattr(voice, "TTS_CHUNK_CHARS", 14)
+
+    def fake_path(chunk, profile):
+        return str(tmp_path / (voice._sha1(chunk) + ".mp3"))
+
+    def fake_synth(chunk, path, profile):
+        with open(path, "wb") as f:
+            f.write(b"x" * 200)
+
+    monkeypatch.setattr(voice, "_tts_cache_path", fake_path)
+    monkeypatch.setattr(voice, "_edge_synthesize", fake_synth)
+    monkeypatch.setattr(sp, "_play_file", lambda path: played.append(path) or True)
+
+    assert sp._play_edge("第一句在这里。第二句稍微长一点！") is True
+    assert len(played) == 2
+    assert sp.last_backend == "edge-tts"
+    assert sp.last_voice == voice.TTS_VOICE_ZH
+    sp.shutdown()
+
+
 def test_disabled_speak_is_noop():
     sp = voice.Speaker(enabled=False)
     assert sp.speak("你好") is False

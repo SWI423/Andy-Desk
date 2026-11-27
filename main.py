@@ -137,6 +137,8 @@ def main():
     atexit.register(mcp_client.shutdown)
     from core import voice
     atexit.register(voice.speaker.shutdown)
+    if not args.cli or args.voice:
+        voice.speaker.warmup()
     st = mcp_client.get_manager().status()
     if not st["enabled"]:
         logger.info("MCP：已关闭（MCP_ENABLED=0）")

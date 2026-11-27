@@ -667,36 +667,45 @@ reply: 好的，模电实验报告已经标记为完成了。
 - **做法 A：只接一个云端 TTS。** 音色最好，但断网就哑，且每次都要等网络。
 - **做法 B：在线为主 + 本地兜底。** 正常走 edge-tts；失败自动切 Windows SAPI；都失败就只显示文字。
 
-### 决定（2026-11-26）
+### 决定（2026-11-26，2026-11-27 修订）
 **用做法 B。** 默认关闭，窗口勾选“语音”或 `.env` 设 `TTS_ENABLED=1` 才播；不默认打扰。
+
+音色按语言分两套：中文 `zh-CN-YunxiNeural`（`-8%`）、英文 `en-US-AndrewNeural`（`-18%`、`-10Hz`），`TTS_VOICE` 留空即自动按回答语言选；窗口“音色”提供在线中/英/自动 + 离线 SAPI 四档。
 
 ### 流程
 1. `speak(text)` 先判开关；关闭直接返回 False。
 2. `clean_tts_text()` 去代码块、行内代码、Markdown 链接、URL、HTML 标签、符号、emoji，压缩空白，超过 `TTS_MAX_CHARS=240` 按句号截断。
 3. 新消息打断上一段：`stop(clear=True)` 停 pygame、清队列；工作线程取到新文本后清中断标记。
-4. `_play_edge()` 先查缓存（`logs/tts/<sha1>.mp3`），没有就 `edge_tts.Communicate(...).save()`；`asyncio.wait_for` 限 25 秒。
-5. `_play_file()` 用 pygame 播放，轮询 `get_busy()`，被中断就 `music.stop()`。
-6. edge 失败 → `_play_sapi()`：pyttsx3 新建 engine，优先选 `zh`/`Chinese` 声音，`runAndWait()`；失败只警告一次。
-7. `shutdown()` 停线程、清队列、退出 mixer。
+4. `pick_profile()` 定音色：显式 `TTS_VOICE` 优先；否则中文用 `TTS_VOICE_ZH`、英文用 `TTS_VOICE_EN`。
+5. `split_tts_text()` 按中英标点把回复切成约 `TTS_CHUNK_CHARS=80` 字的小段；`StreamFeed` 在模型流式输出时按句推送，第一句完整就送去合成，不等整段回复。
+6. `_play_edge()` 逐段查缓存（`logs/tts/<sha1>.mp3`，key 含 voice/rate/pitch/volume/text），没有就 `edge_tts.Communicate(..., pitch=...)` 合成；失败重试 1 次，再退回 SAPI。
+7. `_play_file()` 用 pygame 播放，轮询 `get_busy()`，被中断就 `music.stop()`；启动时 `warmup()` 预热音频设备。
+8. edge 失败 → `_play_sapi()`：pyttsx3 新建 engine，按 lang 选中文或英文系统声音，`runAndWait()`；失败只警告一次。
+9. `shutdown()` 停线程、清队列、退出 mixer。
 
 ### 函数卡片
 | 函数 | 归属 | 参数 | 返回 | 用错后果 |
 |---|---|---|---|---|
 | `clean_tts_text(text)` | `voice` | 原始回复 | 可朗读文本 | 不清洗 → 把代码、URL、Markdown 符号全念出来 |
 | `Speaker.speak(text, interrupt=True)` | 单例 `speaker` | 文本、是否打断 | bool | 阻塞调用 → 窗口卡住；不清队列 → 旧回复排队念 |
+| `pick_profile(text)` | `voice` | 文本 | `{voice,rate,pitch,lang}` | 不按语言选 → 中文用英文音色，发音错乱 |
+| `split_tts_text(text, max_len)` | `voice` | 文本、段长 | 句子列表 | 切太碎 → 请求变多；不切 → 首句等整段合成 |
+| `StreamFeed.feed(delta)` | `voice` | 流式增量 | 完整句子列表 | 不按句切 → 仍要等整段回复才出声 |
 | `Speaker._play_edge(text)` | 内部 | 文本 | bool | 不设超时 → 网络挂起时 worker 卡死 |
 | `Speaker._play_file(path)` | 内部 | mp3 路径 | bool | 不轮询中断 → 用户发新消息后还在念旧内容 |
-| `Speaker._play_sapi(text)` | 内部 | 文本 | bool | 每次新建 engine 较重，但能避免复用状态出错 |
+| `Speaker._play_sapi(text, lang)` | 内部 | 文本、语言 | bool | 不按 lang 选 → 英文文本用中文声音念 |
+| `set_voice_mode(mode)` | `voice` | auto/zh/en/offline | 实际模式 | 切 offline 不清队列 → 上一段在线语音还在播 |
 | `health_check()` | `voice` | 无 | bool | 只看 import 不看设备 → 有库但没声卡时仍报 OK（播放时会降级） |
 
 ### 代价与边界
-- edge-tts 需要网络，首句有 1~2 秒合成延迟；同一句有缓存，重复不再请求。
-- SAPI 音色比 edge 机械，语速/音量可调但情感有限。
+- edge-tts 需要网络，首段合成实测约 2.9~3.6 秒（受网络影响）；同一段有缓存，重复不再请求。
+- 在线英文音色是 `en-US-AndrewNeural`，中文是 `zh-CN-YunxiNeural`；不做“让 Andrew 念中文”这种跨语言强行合成。
+- SAPI 音色比 edge 机械，语速/音量可调但情感有限；离线模式只能选系统已安装的声音。
 - 只做 TTS，不做 ASR；不能语音输入，也不能词级同步高亮。
 - 播放依赖 pygame/SDL 音频设备；设备不可用时只显示文字，不反复重试。
 - 长回复截断到 240 字，避免念完整篇报告；需要完整朗读可调大 `TTS_MAX_CHARS`。
 
-**验证**：`tests/test_voice.py` 6/6（清洗、截断、关闭、队列、降级、健康检查）；真实 edge-tts 合成 30KB mp3，pygame 解码时长正常。
+**验证**：`tests/test_voice.py` 12/12（清洗、截断、音色切换、分句、流式句切、队列、降级、健康检查）；真实合成 `en-US-AndrewNeural`（`-18%`、`-10Hz`）成功，首段 3.65 秒；中文 `zh-CN-YunxiNeural` 首段 3.92 秒。
 
 ---
 
@@ -726,8 +735,13 @@ reply: 好的，模电实验报告已经标记为完成了。
 | `MCP_MAX_TOOLS` | 24 | 同上 | 最多暴露给模型的 MCP 工具数 | 调大 → schema 挤占上下文 |
 | `MCP_ALLOW_WRITE` | 0 | 同上 | 写入型 MCP 工具总开关 | 设 1 仍需 server 级 `allow_write` + 逐次确认 |
 | `TTS_ENABLED` | 0 | 同上 | 语音总开关 | 设 1 启动即开；也可用窗口复选框 |
-| `TTS_VOICE` | `zh-CN-YunxiNeural` | 同上 | edge-tts 音色 | 换音色要清 `logs/tts` 缓存或改配置后重播 |
-| `TTS_RATE` | `-8%` | 同上 | 语速 | 调大 → 更快但听不清 |
+| `TTS_VOICE` | 空 | 同上 | 留空=按语言自动；填了=强制音色 | 填错音色名 → 合成失败，退回 SAPI |
+| `TTS_VOICE_ZH` | `zh-CN-YunxiNeural` | 同上 | 在线中文音色 | 换音色要清 `logs/tts` 缓存或改配置后重播 |
+| `TTS_VOICE_EN` | `en-US-AndrewNeural` | 同上 | 在线英文音色 | 同上 |
+| `TTS_RATE_ZH/EN` | `-8%` / `-18%` | 同上 | 中/英语速 | 调大 → 更快但听不清 |
+| `TTS_PITCH_ZH/EN` | `+0Hz` / `-10Hz` | 同上 | 中/英音调 | 调太低 → 声音发闷 |
+| `TTS_RATE/PITCH` | `-18%` / `-10Hz` | 同上 | 强制 `TTS_VOICE` 时的参数 | 与固定音色配合使用 |
+| `TTS_CHUNK_CHARS` | 80 字 | 同上 | 分句合成段长 | 调小 → 首句更快但请求更多；调大 → 首句更慢 |
 | `TTS_MAX_CHARS` | 240 字 | 同上 | 单次播报上限 | 调大 → 长回复念很久 |
 | `TTS_SAPI_RATE` | 175 | 同上 | SAPI 兜底语速 | 调大 → 更急促 |
 | `TICK_SECONDS` | 30 秒 | `scheduler.py` | 心跳间隔 | 调小 → 更准但唤醒多 |
@@ -774,11 +788,11 @@ reply: 好的，模电实验报告已经标记为完成了。
 | 提醒规则算得对不对 | `python -m core.scheduler` | 打印 once/daily/weekly 的 `compute_next` 结果 |
 | 工具是否真的执行 | `python scripts/check_multi_tool.py` | 日志出现 `[tool] task_update ... -> True`；脚本每次跑用独立测试库，不污染正式数据 |
 | 建档内容 | `python scripts/init_user.py --show` | 显示 Wen / 2026-11-25 / Andy |
-| 单元测试 | `python -m pytest tests -q` | 59 passed（含 MCP 7、语音 6） |
+| 单元测试 | `python -m pytest tests -q` | 65 passed（含 MCP 7、语音 12） |
 | MCP 协议与权限 | `python -m pytest tests/test_mcp.py -q` | 7 passed：握手、发现、只读、写入拒绝/确认、坏命令隔离 |
 | MCP 真实配置 | 复制 `mcp_servers.example.json` 为 `mcp_servers.json`，启动 `python main.py --selftest` | 日志出现“MCP：1 个 server，3 个工具” |
-| 语音清洗与降级 | `python -m pytest tests/test_voice.py -q` | 6 passed |
-| 语音真实链路 | 勾选窗口“语音”或 `python main.py --cli --voice` | 能听到回复；断网时退回 SAPI 或只显示文字 |
+| 语音清洗与降级 | `python -m pytest tests/test_voice.py -q` | 12 passed |
+| 语音真实链路 | 勾选窗口“语音”并打开“音色”或 `python main.py --cli --voice` | 中文 Yunxi、英文 Andrew；断网退回 SAPI 或只显示文字 |
 | 离线功能审计 | `python scripts/functional_audit.py` | 50 项全 PASS，独立库 |
 | 记忆检索评测 | `python scripts/memory_eval.py` | 混合 R@1 100% / R@3 100% / MRR 1.00 / 噪声 0.10 |
 | 任务场景评测 | `python scripts/task_eval.py` | 18 场景 19/19 PASS（真调模型） |
