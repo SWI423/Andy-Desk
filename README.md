@@ -140,7 +140,8 @@ python scripts/chat_flow.py             # 11 轮连续对话流程（真调模�
 python scripts/backfill_embeddings.py --status   # 查看向量索引状态
 python scripts/mcp_demo_server.py       # demo MCP server（一般由客户端自动拉起，不用手跑）
 
-python -m pytest tests -q               # 65 项单测
+python -m pytest tests -q               # 73 项单测
+python -m pytest tests/test_basic_answers.py -q   # 基本问答校准 8 项
 ```
 
 测试脚本默认使用独立数据库（`data/audit_*`、`data/memeval_*` 等），不会污染正式库 `data/baymax.db`。
@@ -299,8 +300,8 @@ MCP 让 Andy 用“插头”的方式接外部能力，而不是每加一个功�
 | 检查 | 方式 | 结果 |
 |---|---|---|
 | 克隆复跑 | 从 GitHub 重新 clone 后 `pytest tests -q` | **59/59 PASS**（提交 `64598b9`，2026-11-27） |
-| 本地全量 | 开发副本 `pytest tests -q` | **65/65 PASS**（含 MCP 7 项、语音 12 项） |
-| 单测 | `pytest tests -q` | 本地 65 项全部通过 |
+| 本地全量 | 开发副本 `pytest tests -q` | **73/73 PASS**（含 MCP 7 项、语音 12 项、基本问答 8 项） |
+| 单测 | `pytest tests -q` | 本地 73 项全部通过 |
 | 离线功能审计 | `scripts/functional_audit.py` | **50/50 PASS** |
 | 记忆检索评测 | `scripts/memory_eval.py` | 混合 **R@1 100% / R@3 100% / MRR 1.00 / 噪声 0.10** |
 | 记忆扩展复核 | `scripts/eval_memory.py --variant hybrid` | 39 条语料 / 15 问句 **hit@1 100%、MRR 1.00** |
@@ -309,6 +310,7 @@ MCP 让 Andy 用“插头”的方式接外部能力，而不是每加一个功�
 | 检索降级 | 单测 `test_fallback_when_embedding_down` | 向量不可用时仍按关键词召回 |
 | MCP 链路 | `tests/test_mcp.py` + demo server | 握手、发现、只读调用、写入拒绝/确认、坏命令隔离 **7/7 PASS** |
 | 语音链路 | `tests/test_voice.py` + 真实合成 | 清洗/截断/音色切换/流式分句/降级 **12/12 PASS**；`en-US-AndrewNeural`（`-18%`、`-10Hz`）真实合成成功 |
+| 基本问答校准 | `tests/test_basic_answers.py` + `ask_baymax` 实跑 | 星期/日期/时间 **8/8 PASS**；`今天星期几`、`现在是几点`、`今天是几号` 均本地直接回答，不调模型 |
 | GUI 全流程 | `scripts/smoke_gui.py` | 建任务 → 对话 → 工具结果 → 提醒浮层 → 截图 |
 | 窗口自检 | `python main.py --selftest` | 9 模块健康检查；配好 `.env` 时全 OK，缺 key 仅“对话核心”FAIL |
 | 并发写 | 8 线程建任务 | 0 错误、8 条全在、无重复 |

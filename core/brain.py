@@ -31,6 +31,80 @@ def current_time_text() -> str:
     return f"现在是 {now.year}年{now.month}月{now.day}日 {WEEK_TEXT[now.weekday()]} {now.strftime('%H:%M')}"
 
 
+# 基本问答校准：日期/星期/时间这种“查表就能答”的问题，不交给模型猜
+_WEEKDAY_SET = {"今天星期几", "今天周几", "今天星期几呀", "今天周几呀",
+                "现在星期几", "现在是星期几", "当前星期几", "星期几",
+                "今天是什么日子", "今天是星期几"}
+_DATE_SET = {"今天几号", "今天多少号", "今天日期", "今天的日期",
+             "今天几月几号", "现在几号", "现在是几号", "现在日期",
+             "当前日期", "今天是几号"}
+_TIME_SET = {"现在几点", "现在几点钟", "现在时间", "当前时间",
+             "现在是什么时间", "几点", "几点了", "时间",
+             "现在是几点", "现在是几点钟", "现在几点了", "现在是几点了"}
+_BASIC_BLOCK = ("提醒", "叫我", "闹钟", "安排", "记下", "记住", "明天",
+                "昨天", "后天", "下周", "上周", "周末")
+
+_FULL_TIME = re.compile(
+    r"(现在是|今天是|当前是)\s*(\d{4})年(\d{1,2})月(\d{1,2})日"
+    r"\s*(星期[一二三四五六日天])(?:\s*(\d{1,2}:\d{2}))?")
+_WEEK_ONLY = re.compile(r"今天(是)?(星期[一二三四五六日天])")
+_CONDITIONAL = ("如果", "假如", "假设", "要是", "若", "不是", "并非", "除非")
+
+
+def _is_conditional(text: str, start: int) -> bool:
+    return any(k in text[max(0, start - 6):start] for k in _CONDITIONAL)
+
+
+def answer_basic_query(text: str, now=None):
+    """只处理短句里的日期/星期/时间；返回 None 表示交给正常对话"""
+    norm = re.sub(r"[？?。！!，,、\s]", "", text or "")
+    if not norm or len(norm) > 16:
+        return None
+    if any(k in norm for k in _BASIC_BLOCK):
+        return None
+    now = now or datetime.now()
+    week = WEEK_TEXT[now.weekday()]
+    date_text = f"{now.year}年{now.month}月{now.day}日"
+    if norm in _WEEKDAY_SET:
+        return f"今天是 {date_text}，{week}。"
+    if norm in _DATE_SET:
+        return f"今天是 {date_text}，{week}。"
+    if norm in _TIME_SET:
+        return f"现在是 {date_text} {week} {now.strftime('%H:%M')}。"
+    return None
+
+
+def calibrate_reply_time(reply: str, now=None) -> str:
+    """模型偶尔会无视注入的时间；把带今天日期的错误星期/时间改回来"""
+    text = reply or ""
+    now = now or datetime.now()
+
+    def full_repl(m):
+        if _is_conditional(text, m.start()):
+            return m.group(0)
+        try:
+            dt = datetime(int(m.group(2)), int(m.group(3)), int(m.group(4)))
+        except ValueError:
+            return m.group(0)
+        week = WEEK_TEXT[dt.weekday()]
+        tail_time = f" {now.strftime('%H:%M')}" if (
+            m.group(6) and dt.date() == now.date()) else (
+            f" {m.group(6)}" if m.group(6) else "")
+        return (f"{m.group(1)} {dt.year}年{dt.month}月{dt.day}日 "
+                f"{week}{tail_time}")
+
+    def week_repl(m):
+        if _is_conditional(text, m.start()):
+            return m.group(0)
+        return f"今天{m.group(1) or ''}{WEEK_TEXT[now.weekday()]}"
+
+    new = _FULL_TIME.sub(full_repl, text)
+    new = _WEEK_ONLY.sub(week_repl, new)
+    if new != text:
+        logger.info("[brain] 校准时间表述：%s -> %s", text[:60], new[:60])
+    return new
+
+
 # ---------- 时间硬拦截 ----------
 
 _REMINDER_KW = ["提醒我", "叫我", "别忘了", "定时"]
@@ -180,6 +254,14 @@ def ask_baymax(user_input: str, on_chunk=None, session_id: str = SESSION_ID) -> 
         return {"reply": reply, "tools_called": [],
                 "context_meta": {"intercepted": True}, "error": None}
 
+    # 1.1 基本问答硬拦截：日期/星期/几点直接查本机时钟，模型经常答错
+    basic = answer_basic_query(text)
+    if basic:
+        memory.log_event("user", text)
+        memory.log_event("assistant", basic)
+        return {"reply": basic, "tools_called": [],
+                "context_meta": {"intercepted": "basic_time"}, "error": None}
+
     # 2. 先取历史（避免把本轮输入重复注入），再落用户事件 + 规则抽事实
     history = memory.recent_events(limit=HISTORY_LIMIT * 2, session_id=session_id)
     ctx = memory.build_context(text)
@@ -307,6 +389,7 @@ def ask_baymax(user_input: str, on_chunk=None, session_id: str = SESSION_ID) -> 
         reply = f"我这边连模型出了点问题（{type(e).__name__}）。本地任务和提醒功能还能用，稍后再试一次对话。"
 
     reply = (reply or "").strip() or "嗯，我在。"
+    reply = calibrate_reply_time(reply)
     memory.log_event("assistant", reply)
     return {
         "reply": reply,

@@ -1,4 +1,4 @@
-﻿# Andy 功能测试与修复报告
+# Andy 功能测试与修复报告
 
 > 测试日期：2026-11-25 · 被测版本：MVP + 本轮质量加固（提交见 `git log -1`）
 > 环境：Windows 11 / conda `baymax` / Python 3.10.21；对话 `glm-4-flash`；向量 `embedding-3`（2048 维）
@@ -8,7 +8,7 @@
 
 ## 一、一句话结论
 
-主链路已经可用：**离线功能审计 50/50、单元测试 65 项全过、真实模型任务评测 19/19、11 轮多轮对话 4/4、GUI 冒烟 PASS、9 模块自检（配好 `.env` 时全 OK）**。本轮另加 MCP 7 项、语音 12 项专项测试，均通过。
+主链路已经可用：**离线功能审计 50/50、单元测试 73 项全过、真实模型任务评测 19/19、11 轮多轮对话 4/4、GUI 冒烟 PASS、9 模块自检（配好 `.env` 时全 OK）**。本轮另加 MCP 7 项、语音 12 项、基本问答校准 8 项专项测试，均通过。
 
 本轮共修掉 **23 个真实缺陷**，其中 4 个属于“用户以为办好了、系统其实没办”的严重问题；记忆检索从 **R@1 70% 提升到 100%**，top3 噪声从 **0.70 降到 0.10**。修复过程中自己引入过 2 个回归（提醒查询被误判、建任务被强制调用导致截止时间丢失），都已在交付前修掉并纳入回归用例。另完成 **stdio MCP 客户端框架** 与 **TTS 语音播报**，验证见第三节 F。
 
@@ -19,7 +19,7 @@
 | 测试 | 脚本 | 覆盖内容 | 结果 |
 |---|---|---|---|
 | 离线功能审计 | `scripts/functional_audit.py` | 8 张表与级联删除、任务增删改查/排序/拆解、事实蒸馏、上下文预算、工具契约、调度补发、时间拦截、JSON 解析、tool_call id 对齐，共 50 项 | **50/50 PASS** |
-| 单元测试 | `pytest tests -q` | 原有 23 项 + 本轮 23 项回归 + MCP 7 项 + 语音 12 项 | **65 passed** |
+| 单元测试 | `pytest tests -q` | 原有 23 项 + 本轮 23 项回归 + MCP 7 项 + 语音 12 项 + 基本问答 8 项 | **73 passed** |
 | 记忆评测 | `scripts/memory_eval.py` | 24 条带时间戳语料 + 8 条噪声 + 10 个换说法问句；对比关键词/向量/混合三路，统计 R@1、R@3、MRR、噪声、耗时 | **混合 R@1 100%、R@3 100%、MRR 1.00、噪声 0.10** |
 | 记忆扩展复核 | `scripts/eval_memory.py --variant hybrid` | 另一套 39 条语料 + 15 个概括式/指代式问句，防止只在 10 问句上“刷分” | **hit@1 100%、hit@3 100%、MRR 1.00** |
 | 任务评测 | `scripts/task_eval.py` | 18 个真实模型场景、19 个断言：建任务/相对日期/查询/完成/开始/进度/拆解/提醒/每日提醒/重复/别名/偏好/身份/过去时间/一句话两件事 | **19/19 PASS** |
@@ -28,6 +28,7 @@
 | 窗口自检 | `main.py --selftest` | 记忆/任务/调度/工具/数据库/向量层/模型配置/MCP/语音 9 项 | **配好 `.env` 时全 OK**；开发副本缺 key 时仅“对话核心”FAIL，截图 `logs/selftest_window.png` |
 | MCP 链路 | `tests/test_mcp.py` + `scripts/mcp_demo_server.py` | 启动 demo server、握手、工具发现、只读调用、写入拒绝/确认、坏命令隔离、无配置 | **7/7 PASS** |
 | 语音链路 | `tests/test_voice.py` + 真实合成 | 清洗、截断、音色路由/切换、流式分句、队列、edge 失败降级 SAPI、健康检查；真实合成与播放 | **12/12 PASS**；Andrew 首段 3.65 秒、Yunxi 3.92 秒，pygame 解码成功 |
+| 基本问答校准 | `tests/test_basic_answers.py` + `ask_baymax` 实跑 | 星期/日期/几点本地确定性回答；任务句不误拦截；模型回复中的错误星期/时间按本机时钟纠正；非今日日期不改；条件句不误改 | **8/8 PASS**；`今天星期几`、`现在是几点`、`今天是几号` 均不再调模型 |
 | 并发写 | 8 线程同时建任务 | SQLite 单写锁是否丢数据/报错 | **0 错误、8 条全在、无重复** |
 
 说明：
@@ -133,8 +134,8 @@
 | 指标 | 修复前 | 修复后 |
 |---|---|---|
 | 离线功能审计 | 40/50 | **50/50** |
-| 单元测试 | 23 项 | **65 项全过**（含 MCP 7、语音 12） |
-| MCP / 语音 | 未实现 | **MCP 7/7、语音 12/12 通过**；真实合成与播放成功 |
+| 单元测试 | 23 项 | **73 项全过**（含 MCP 7、语音 12、基本问答 8） |
+| MCP / 语音 / 基本问答 | 未实现 | **MCP 7/7、语音 12/12、基本问答 8/8 通过**；真实合成与播放成功 |
 | 记忆混合 R@1 | 70% | **100%** |
 | 记忆 MRR | 0.85 | **1.00** |
 | top3 噪声 | 0.70 | **0.10** |
@@ -171,10 +172,10 @@ D:\prgramf\Anaconda3\envs\baymax\python.exe scripts\task_eval.py
 D:\prgramf\Anaconda3\envs\baymax\python.exe scripts\chat_flow.py
 D:\prgramf\Anaconda3\envs\baymax\python.exe scripts\smoke_gui.py
 D:\prgramf\Anaconda3\envs\baymax\python.exe main.py --selftest
-D:\prgramf\Anaconda3\envs\baymax\python.exe -m pytest tests\test_mcp.py tests\test_voice.py -q
+D:\prgramf\Anaconda3\envs\baymax\python.exe -m pytest tests\test_basic_answers.py tests\test_mcp.py tests\test_voice.py -q
 ```
 
-预期：65 passed / 50 通过 / R@1 100% / 19 通过 / 4 通过 / PASS / 9 项检查（配好 `.env` 全 OK）；MCP 7 + 语音 12 通过。
+预期：73 passed / 50 通过 / R@1 100% / 19 通过 / 4 通过 / PASS / 9 项检查（配好 `.env` 全 OK）；MCP 7 + 语音 12 + 基本问答 8 通过。
 
 ---
 

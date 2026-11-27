@@ -1,4 +1,4 @@
-﻿# Andy（Baymax_pro）开发进度表
+# Andy（Baymax_pro）开发进度表
 
 > 任务编号与 `docs/WBS.md` 对齐；需求见 `docs/PRD.md`；记忆层决策见 `docs/MEMORY_DESIGN.md`；本轮测试与缺陷明细见 **`docs/TEST_REPORT.md`**。
 > 项目路径：`D:\my_project\PythonProject\Baymax_pro`；运行环境：conda `baymax`（Python 3.10.21）。
@@ -7,7 +7,7 @@
 
 ## 一、当前结论
 
-**MVP 功能已经齐全，本轮把“能不能真的用”补上了：功能审计 50/50、单测 65 项全过、真实模型任务评测 19/19、11 轮多轮对话 4/4、GUI 冒烟通过、9 模块自检（配好 `.env` 时全 OK）。**
+**MVP 功能已经齐全，本轮把“能不能真的用”补上了：功能审计 50/50、单测 73 项全过、真实模型任务评测 19/19、11 轮多轮对话 4/4、GUI 冒烟通过、9 模块自检（配好 `.env` 时全 OK）。**
 
 记忆检索是这轮的重点：换说法问旧事，第一条就命中的比例从 **70% 提到 100%**；top3 里无关内容的平均条数从 **0.7 降到 0.1**。
 
@@ -121,7 +121,7 @@ python scripts\chat_flow.py          # 11 轮连续对话
 | 指标 | 上轮 | 本轮 | 说明 |
 |---|---|---|---|
 | 离线功能审计 | 40/50 | **50/50** | 8 张表、任务、提醒、工具、上下文、调度 |
-| 单元测试 | 23 | **65 passed** | 新增 23 项回归 + MCP 7 项 + 语音 12 项 |
+| 单元测试 | 23 | **73 passed** | 新增 23 项回归 + MCP 7 项 + 语音 12 项 + 基本问答 8 项 |
 | 记忆混合 R@1 | 70% | **100%** | 第一条就命中的比例 |
 | 记忆 R@3 | 100% | **100%** | 前三条内命中 |
 | 记忆 MRR | 0.85 | **1.00** | 命中位置越靠前越接近 1 |
@@ -150,7 +150,7 @@ python scripts\chat_flow.py          # 11 轮连续对话
 | 正式库 | `data/baymax.db`（`data/` 已 gitignore） |
 | 测试库 | `data/audit_*`、`data/memeval_*`、`data/taskeval_*`、`data/chatflow_*`、`data/smoke_*`，可整目录删除，不影响正式数据 |
 | 本轮改动 | `config.py`、`main.py`、`core/{tools,brain}.py`、`desktop/main_window.py`；新增 `core/mcp_client.py`、`core/voice.py`、`scripts/mcp_demo_server.py`、`tests/{test_mcp,test_voice}.py`、`mcp_servers.example.json`；`requirements.txt` 加 edge-tts/pyttsx3/pygame；本轮改动在公开仓库 `SWI423/Andy-Desk` 的 `main` |
-| 回归入口 | 先跑 `pytest tests -q`（应 65 passed），再跑 `functional_audit.py`（应 50/50） |
+| 回归入口 | 先跑 `pytest tests -q`（应 73 passed），再跑 `functional_audit.py`（应 50/50） |
 | MCP 配置 | `mcp_servers.json` 不入库（已在 `.gitignore`）；从 `mcp_servers.example.json` 复制后改 `command/args/cwd` |
 | 语音依赖 | `edge-tts` 需联网；离线走 Windows SAPI；`logs/tts/` 是合成缓存，可删 |
 | 模型 | 对话 `glm-4-flash`，向量 `embedding-3`（2048 维）；换模型要重建向量并重标阈值 |
@@ -203,7 +203,7 @@ python scripts\chat_flow.py          # 11 轮连续对话
 | M7 | 工具层 + 工具循环 | Must | 🟢 已完成 | 2026-11-25 | 8 个工具 schema + 注册表 + 重复调用跳过 |
 | M8 | 调度层（提醒+补发） | Must | 🟢 已完成 | 2026-11-25 | 30s 心跳 + 启动补发 + 错过计数修复 |
 | M9 | 桌面窗口（三线看板） | Must | 🟢 已完成 | 2026-11-25 | `desktop/main_window.py` + `theme.py` |
-| M10 | 全链路验证 | Must | 🟢 已完成 | 2026-11-25 | 65 项单测 + 50 项审计 + 记忆/任务/多轮评测 + GUI/自检 |
+| M10 | 全链路验证 | Must | 🟢 已完成 | 2026-11-25 | 73 项单测 + 50 项审计 + 记忆/任务/多轮评测 + GUI/自检 |
 | M11 | 指令拆解 | Must | 🟢 已完成 | 2026-11-25 | `task_breakdown`，≤6 步，子步骤不继承截止 |
 | M12 | 今日概览 | Must | 🟢 已完成 | 2026-11-25 | `tasks.today_overview` + 状态条 + `overview_today` 工具 |
 
@@ -244,7 +244,7 @@ python scripts\chat_flow.py          # 11 轮连续对话
 
 | 检查项 | 命令 | 结果 |
 |---|---|---|
-| 单元测试 | `pytest tests -q` | **65 passed**（MCP 7 + 语音 12） |
+| 单元测试 | `pytest tests -q` | **73 passed**（MCP 7 + 语音 12 + 基本问答 8） |
 | 离线功能审计 | `scripts/functional_audit.py` | **50/50 PASS** |
 | 记忆评测 | `scripts/memory_eval.py` | 混合 **R@1 100% / R@3 100% / MRR 1.00 / 噪声 0.10** |
 | 记忆扩展复核 | `scripts/eval_memory.py --variant hybrid` | **15 问句 / 39 条语料 hit@1 100%、MRR 1.00** |
@@ -284,4 +284,4 @@ python scripts\chat_flow.py          # 11 轮连续对话
 | 2026-11-25 | 检索升级为 embedding + 关键词混合；测试 23 项 |
 | 2026-11-25 | **质量加固**：三层测试体系 + 23 个缺陷修复 + 记忆 R@1 70%→100% + 假报喜拦截；单测 46 项；新增 `TEST_REPORT.md`、ADR-009 |
 | 2026-11-26 | **扩展能力**：stdio MCP 客户端 + 权限门；TTS 语音播报（edge-tts + SAPI 兜底）；单测 59 项；窗口自检 9 模块；README/DECISIONS/PROGRESS 同步 |
-| 2026-11-27 | **语音修订**：恢复用户选定 `en-US-AndrewNeural`（-18%、-10Hz），中文 Yunxi；新增自动/在线中/在线英/离线四档音色；流式分句 + 音频预热降延迟；单测 65 项 |
+| 2026-11-27 | **语音修订 + 基本问答校准**：恢复用户选定 `en-US-AndrewNeural`（-18%、-10Hz），中文 Yunxi；新增自动/在线中/在线英/离线四档音色；流式分句 + 音频预热降延迟；星期/日期/时间改为本地确定性回答，模型回复中的错误时间按本机时钟纠正；单测 73 项（含基本问答 8） |
