@@ -552,6 +552,7 @@ class BaymaxWindow(QMainWindow):
             voice.speaker.warmup()
         self._voice_feed = voice.StreamFeed()
         self._voice_stream_chars = 0
+        self._streamed_chars = 0
 
         self._worker = None
         self._build_ui()
@@ -741,6 +742,7 @@ class BaymaxWindow(QMainWindow):
             voice.speaker.stop()
         self._voice_feed = voice.StreamFeed()
         self._voice_stream_chars = 0
+        self._streamed_chars = 0
         self.input.clear()
         self._append_user(text)
         self.chat.append(f"<p style='color:#0f766e'><b>{APP_NAME}</b></p>")
@@ -757,10 +759,13 @@ class BaymaxWindow(QMainWindow):
         self._worker.start()
 
     def _on_chunk(self, text: str):
+        if not text:
+            return
         cursor = self.chat.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         self.chat.setTextCursor(cursor)
         self.chat.insertPlainText(text)
+        self._streamed_chars += len(text)
         self.chat.verticalScrollBar().setValue(self.chat.verticalScrollBar().maximum())
         if voice.speaker.enabled and text:
             remaining = max(0, voice.TTS_MAX_CHARS - self._voice_stream_chars)
@@ -826,6 +831,9 @@ class BaymaxWindow(QMainWindow):
             self.chat.append(f"<p style='color:#b45309'>{html.escape(res['error'][:200])}</p>")
         self.chat.append("")
         reply = (res.get("reply") or "").strip()
+        if reply and not res.get("error") and not self._streamed_chars:
+            # 日期/星期/时间等硬拦截直接返回，不经过流式分片
+            self._on_chunk(reply)
         if reply and not res.get("error") and voice.speaker.enabled:
             if self._voice_stream_chars:
                 for sentence in self._voice_feed.flush():
