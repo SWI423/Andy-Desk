@@ -109,6 +109,10 @@ def main():
     parser.add_argument("--cli", action="store_true", help="终端模式")
     parser.add_argument("--selftest", action="store_true", help="窗口自检后自动退出")
     parser.add_argument("--voice", action="store_true", help="终端模式下开启语音播报")
+    parser.add_argument("--lang", default=None,
+                        help="回复语种：auto/zh-CN/zh-TW/en-US/en-GB/en-CA/en-HK")
+    parser.add_argument("--voice-mode", default=None,
+                        help="朗读音色：follow/zh-CN/zh-TW/en-US/en-GB/en-CA/en-HK/sapi")
     args = parser.parse_args()
 
     logger.info("=" * 44)
@@ -137,6 +141,12 @@ def main():
     atexit.register(mcp_client.shutdown)
     from core import voice
     atexit.register(voice.speaker.shutdown)
+    if args.lang:
+        voice.set_language_mode(args.lang)
+        logger.info(f"语种：{voice.language_label()}")
+    if args.voice_mode:
+        voice.set_voice_mode(args.voice_mode)
+        logger.info(f"音色：{voice.voice_label()}")
     if not args.cli or args.voice:
         voice.speaker.warmup()
     st = mcp_client.get_manager().status()

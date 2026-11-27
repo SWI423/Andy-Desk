@@ -7,11 +7,11 @@
 
 ## 一、当前结论
 
-**MVP 功能已经齐全，本轮把“能不能真的用”补上了：功能审计 50/50、单测 73 项全过、真实模型任务评测 19/19、11 轮多轮对话 4/4、GUI 冒烟通过、9 模块自检（配好 `.env` 时全 OK）。**
+**MVP 功能已经齐全，本轮把“能不能真的用”补上了：功能审计 50/50、单测 84 项全过、真实模型任务评测 19/19、11 轮多轮对话 4/4、GUI 冒烟通过、10 项自检（配好 `.env` 时全 OK）。**
 
 记忆检索是这轮的重点：换说法问旧事，第一条就命中的比例从 **70% 提到 100%**；top3 里无关内容的平均条数从 **0.7 降到 0.1**。
 
-本轮还补了两块扩展能力：**stdio MCP 客户端**（配置化接外部工具，带读写权限门）和 **TTS 语音播报**（edge-tts 为主、Windows SAPI 兜底）。
+本轮还补了三块扩展能力：**stdio MCP 客户端**（配置化接外部工具，带读写权限门）、**TTS 语音播报**（edge-tts 为主、Windows SAPI 兜底）和**语种/音色分离设置**（六套音色，回复语种七档单独选，朗读音色默认跟随语种、也可单独指定；选英文语种后中文提问也用英文回答）。
 
 需要说清楚的边界：主评测是 10 个问句、24 条合成语料，扩展复核是 15 个问句、39 条语料（两套都满分）；仍不等于真实聊天永远不错。长时间挂机、关机提醒、多用户、远程 MCP、ASR 仍未验证/未实现。
 
@@ -97,21 +97,22 @@ python scripts\chat_flow.py          # 11 轮连续对话
 
 真实集成验证：demo 1 个 server、3 个工具；`tools.get_tools()` 暴露内置 8 + MCP 3；`call_tool("mcp__demo__echo")` 返回 `echo: 路由成功`；`write_note` 确认后写入成功。
 
-### 8. 语音播报
+### 8. 语音播报与语种/音色分离
 
 - `core/voice.py`：先清洗文本（去代码块、链接、Markdown 符号、emoji，超 240 字按句截断），再合成播放。
-- 合成优先 edge-tts：中文 `zh-CN-YunxiNeural`（-8%）、英文 `en-US-AndrewNeural`（-18%、-10Hz），`TTS_VOICE` 留空按回答语言自动选；失败退回 Windows SAPI（按中/英文选系统声音），两者都失败只显示文字。
+- 合成优先 edge-tts。回复语种和朗读音色拆成两套设置：`language_mode` 管回复语言（`auto/zh-CN/zh-TW/en-US/en-GB/en-CA/en-HK`），`voice_mode` 管嗓子（`follow/zh-CN/zh-TW/en-US/en-GB/en-CA/en-HK/sapi`）。默认音色 `follow` 跟随语种；手动选到跨语言组合时界面提示“可能不自然”，但不阻止保存。失败退回 Windows SAPI（按文本语言选系统声音），两者都失败只显示文字。
+- 语种不只是换音色：`prompts.LANGUAGE_INSTRUCTIONS` 给模型硬性回复语言约束，并在首条 system、用户句前 system、中文提问句尾各压一次，避免历史中文把回复带回去。
 - 独立 daemon 线程 + 12 条队列，新消息打断上一段；pygame 播放，可被 `stop()` 中断；启动预热音频设备。
-- 降延迟：模型流式输出时 `StreamFeed` 按句切，第一句完整立即合成播放；每段再按 80 字切分，Andrew 首段实测 3.65 秒、Yunxi 3.92 秒。
-- 窗口输入框旁加“语音”复选框和“音色”按钮（自动/在线中/在线英/离线 SAPI 四档），状态写 `QSettings`；CLI 用 `--voice`；默认关闭，不主动打扰。
-- 真实链路：Andrew 与 Yunxi 均合成成功，pygame 解码播放；SAPI 识别到 Huihui 中文音色。
+- 降延迟：模型流式输出时 `StreamFeed` 按句切，第一句完整立即合成播放；每段再按 80 字切分。
+- 窗口输入框旁加“语音”复选框和“语言/音色”按钮（两个下拉框），两项分别写 `QSettings` 的 `language_mode` 与 `voice_mode`，旧单档设置自动迁移；CLI 用 `--voice --lang`，可再加 `--voice-mode` 单独指定音色；默认关闭，不主动打扰。
+- 真实链路：6 个音色均合成成功，总耗时 13.52 秒；真实模型切到 `en-GB/en-HK/en-US/en-CA` 均英文回复，`zh-TW` 繁體中文回复；解绑后 `en-GB` 语种 + `zh-CN` 音色仍保持英文回复、中文嗓子，两项互不覆盖。
 
 ### 9. 文档
 
 - 新增 `docs/TEST_REPORT.md`：测试范围、指标、23 个缺陷的根因与修法、未解决项、复现命令。
 - 本文件重写：完成内容、指标、交接与后续优化。
 - `docs/MEMORY_DESIGN.md` 增加 ADR-009：本轮检索排序、角色过滤、事实方向抽取、主题加权。
-- `docs/DECISIONS.md` 新增决策 8（MCP）与决策 9（TTS），并把决策 5 标注为“MCP 已接 stdio、HTTP 仍未做”。
+- `docs/DECISIONS.md` 新增决策 8（MCP）与决策 9（TTS + 语种/音色分离），并把决策 5 标注为“MCP 已接 stdio、HTTP 仍未做”。
 - `README.md` 更新验证命令与结果，补 MCP 配置、语音开关、扩展层说明。
 
 ---
@@ -121,7 +122,7 @@ python scripts\chat_flow.py          # 11 轮连续对话
 | 指标 | 上轮 | 本轮 | 说明 |
 |---|---|---|---|
 | 离线功能审计 | 40/50 | **50/50** | 8 张表、任务、提醒、工具、上下文、调度 |
-| 单元测试 | 23 | **73 passed** | 新增 23 项回归 + MCP 7 项 + 语音 12 项 + 基本问答 8 项 |
+| 单元测试 | 23 | **84 passed** | 新增 23 项回归 + MCP 7 项 + 语音与语种解绑 15 项 + 基本问答 16 项 |
 | 记忆混合 R@1 | 70% | **100%** | 第一条就命中的比例 |
 | 记忆 R@3 | 100% | **100%** | 前三条内命中 |
 | 记忆 MRR | 0.85 | **1.00** | 命中位置越靠前越接近 1 |
@@ -130,9 +131,10 @@ python scripts\chat_flow.py          # 11 轮连续对话
 | 任务评测 | 19/19 | **19/19** | 18 场景，真调模型 |
 | 多轮流程 | 有 2 处失败 | **4/4** | 11 轮连续对话 |
 | GUI 冒烟 | PASS | **PASS** | 建任务→问答→提醒浮层→截图 |
-| 窗口自检 | 7 项 OK | **9 项检查** | 记忆/任务/调度/工具/数据库/向量/模型/MCP/语音；缺 `.env` 时仅模型配置 FAIL |
+| 窗口自检 | 7 项 OK | **10 项检查** | 9 个模块 + 模型配置；缺 `.env` 时仅对话核心/模型配置 FAIL |
 | MCP 链路 | — | **7/7 PASS** | 握手、发现、只读、写入拒绝/确认、坏命令隔离 |
-| 语音链路 | — | **12/12 PASS** | 清洗/截断/音色路由/切换/流式分句/队列/降级；Andrew 与 Yunxi 真实合成 + pygame 解码 |
+| 语音与语种 | — | **15/15 PASS** | 清洗/截断/音色路由/语种与音色独立/旧值迁移/跨语种提示/流式分句/队列/降级；6 音色真实合成；5 档真实模型语种实跑 |
+| 解绑独立性 | — | **PASS** | 切语种不改音色、切音色不改语种；`follow` 按语种选音色；跨语言组合提示但不拦截 |
 
 截图：`logs/gui_flow.png`（完整界面与提醒浮层）、`logs/selftest_window.png`（空库自检窗口）。
 
@@ -150,7 +152,7 @@ python scripts\chat_flow.py          # 11 轮连续对话
 | 正式库 | `data/baymax.db`（`data/` 已 gitignore） |
 | 测试库 | `data/audit_*`、`data/memeval_*`、`data/taskeval_*`、`data/chatflow_*`、`data/smoke_*`，可整目录删除，不影响正式数据 |
 | 本轮改动 | `config.py`、`main.py`、`core/{tools,brain}.py`、`desktop/main_window.py`；新增 `core/mcp_client.py`、`core/voice.py`、`scripts/mcp_demo_server.py`、`tests/{test_mcp,test_voice}.py`、`mcp_servers.example.json`；`requirements.txt` 加 edge-tts/pyttsx3/pygame；本轮改动在公开仓库 `SWI423/Andy-Desk` 的 `main` |
-| 回归入口 | 先跑 `pytest tests -q`（应 73 passed），再跑 `functional_audit.py`（应 50/50） |
+| 回归入口 | 先跑 `pytest tests -q`（应 84 passed），再跑 `functional_audit.py`（应 50/50） |
 | MCP 配置 | `mcp_servers.json` 不入库（已在 `.gitignore`）；从 `mcp_servers.example.json` 复制后改 `command/args/cwd` |
 | 语音依赖 | `edge-tts` 需联网；离线走 Windows SAPI；`logs/tts/` 是合成缓存，可删 |
 | 模型 | 对话 `glm-4-flash`，向量 `embedding-3`（2048 维）；换模型要重建向量并重标阈值 |
@@ -182,7 +184,7 @@ python scripts\chat_flow.py          # 11 轮连续对话
 - **决策 2（心跳调度）**：保持现状。数据库单表为唯一真相 + 30 秒心跳 + 启动补发；接受“程序关着不响、误差 ≤30 秒”，关机提醒留作 Windows 计划任务的独立增量。
 - **决策 4（直连 SDK）**：保持现状。openai SDK 流式 + 自写工具循环（≤4 轮）+ 时间拦截 + 假报喜核对；出现 5 步以上复杂任务或多模型分工时再评估编排层。
 - **决策 8（MCP）**：外部能力走 stdio MCP 客户端，配置化发现工具；写入双开关 + 逐次确认；远程 HTTP/SSE 暂不做。
-- **决策 9（TTS）**：edge-tts 在线为主，Windows SAPI 兜底；默认关闭，由窗口复选框或 `.env` 开启；ASR 暂不做。
+- **决策 9（TTS + 语种/音色）**：edge-tts 在线为主，Windows SAPI 兜底；回复语种和朗读音色拆成 `language_mode` / `voice_mode` 两套独立设置，音色默认跟随语种；跨语言组合只提示不阻止；默认关闭，由窗口复选框或 `.env` 开启；跨语言音质未逐个实测，ASR 暂不做。
 
 两项均由 Wen 授权 Andy 决定，理由与升级触发条件见 `docs/DECISIONS.md` 对应章节。
 
@@ -203,7 +205,7 @@ python scripts\chat_flow.py          # 11 轮连续对话
 | M7 | 工具层 + 工具循环 | Must | 🟢 已完成 | 2026-11-25 | 8 个工具 schema + 注册表 + 重复调用跳过 |
 | M8 | 调度层（提醒+补发） | Must | 🟢 已完成 | 2026-11-25 | 30s 心跳 + 启动补发 + 错过计数修复 |
 | M9 | 桌面窗口（三线看板） | Must | 🟢 已完成 | 2026-11-25 | `desktop/main_window.py` + `theme.py` |
-| M10 | 全链路验证 | Must | 🟢 已完成 | 2026-11-25 | 73 项单测 + 50 项审计 + 记忆/任务/多轮评测 + GUI/自检 |
+| M10 | 全链路验证 | Must | 🟢 已完成 | 2026-11-25 | 84 项单测 + 50 项审计 + 记忆/任务/多轮评测 + GUI/自检 |
 | M11 | 指令拆解 | Must | 🟢 已完成 | 2026-11-25 | `task_breakdown`，≤6 步，子步骤不继承截止 |
 | M12 | 今日概览 | Must | 🟢 已完成 | 2026-11-25 | `tasks.today_overview` + 状态条 + `overview_today` 工具 |
 
@@ -228,7 +230,7 @@ python scripts\chat_flow.py          # 11 轮连续对话
 |---|---|---|---|
 | S1 | MCP 客户端 | 🟢 已完成（stdio） | `core/mcp_client.py`；远程 HTTP/SSE 未做 |
 | S2 | 对接自建 FastAPI | ⚪ 未开始 | 先走 HTTP 工具路径 |
-| S3 | TTS 语音播报 | 🟢 已完成 | 中文 Yunxi / 英文 Andrew，可在线切换或离线 SAPI；流式分句降延迟；默认关闭 |
+| S3 | TTS 语音播报 + 语种/音色分离 | 🟢 已完成 | 六套在线音色 + 跟随/离线；回复语种七档、朗读音色八档分开切换；选英文语种后用英文回答；流式分句降延迟；跨语言组合提示但不阻止；默认关闭 |
 | S4 | ASR（可选） | ⚪ 未开始 | 按住说话、唤醒词都未做 |
 | S5 | 健康模块回归 | ⚪ 未开始 | 已保留 `save_health_event` 兼容接口 |
 | S6 | 微信代发提醒 | ⚪ 未开始 | 人工审查，不自动发送 |
@@ -244,16 +246,16 @@ python scripts\chat_flow.py          # 11 轮连续对话
 
 | 检查项 | 命令 | 结果 |
 |---|---|---|
-| 单元测试 | `pytest tests -q` | **73 passed**（MCP 7 + 语音 12 + 基本问答 8） |
+| 单元测试 | `pytest tests -q` | **84 passed**（MCP 7 + 语音与语种解绑 15 + 基本问答 16） |
 | 离线功能审计 | `scripts/functional_audit.py` | **50/50 PASS** |
 | 记忆评测 | `scripts/memory_eval.py` | 混合 **R@1 100% / R@3 100% / MRR 1.00 / 噪声 0.10** |
 | 记忆扩展复核 | `scripts/eval_memory.py --variant hybrid` | **15 问句 / 39 条语料 hit@1 100%、MRR 1.00** |
 | 任务评测 | `scripts/task_eval.py` | **19/19 PASS** |
 | 多轮流程 | `scripts/chat_flow.py` | **4/4 PASS**（11 轮） |
 | MCP 链路 | `tests/test_mcp.py` + `mcp_demo_server.py` | **7/7 PASS**；demo 3 工具可发现、echo 路由成功、write_note 确认后写入 |
-| 语音链路 | `tests/test_voice.py` + 真实合成 | **12/12 PASS**；Andrew 3.65 秒、Yunxi 3.92 秒首段，pygame 解码成功 |
+| 语音与语种 | `tests/test_voice.py` + 真实合成 | **15/15 PASS**；6 音色真实合成成功；5 档真实模型语种实跑符合；语种与音色互不覆盖 |
 | GUI 全流程 | `scripts/smoke_gui.py` | **PASS**，`logs/gui_flow.png` |
-| 窗口自检 | `main.py --selftest` | **9 项检查**；配好 `.env` 全 OK，缺 key 仅“对话核心”FAIL；截图 `logs/selftest_window.png` |
+| 窗口自检 | `main.py --selftest` | **10 项检查**；配好 `.env` 全 OK，缺 key 仅“对话核心”FAIL；截图 `logs/selftest_window.png` |
 | 并发写 | 8 线程建任务 | 0 错误、8 条全在、无重复 |
 
 未覆盖：长时间挂机跨天、真实到点触发、100 次混合读写压测、多用户/多设备、真实第三方 MCP server 兼容性。
@@ -284,4 +286,6 @@ python scripts\chat_flow.py          # 11 轮连续对话
 | 2026-11-25 | 检索升级为 embedding + 关键词混合；测试 23 项 |
 | 2026-11-25 | **质量加固**：三层测试体系 + 23 个缺陷修复 + 记忆 R@1 70%→100% + 假报喜拦截；单测 46 项；新增 `TEST_REPORT.md`、ADR-009 |
 | 2026-11-26 | **扩展能力**：stdio MCP 客户端 + 权限门；TTS 语音播报（edge-tts + SAPI 兜底）；单测 59 项；窗口自检 9 模块；README/DECISIONS/PROGRESS 同步 |
-| 2026-11-27 | **语音修订 + 基本问答校准**：恢复用户选定 `en-US-AndrewNeural`（-18%、-10Hz），中文 Yunxi；新增自动/在线中/在线英/离线四档音色；流式分句 + 音频预热降延迟；星期/日期/时间改为本地确定性回答，模型回复中的错误时间按本机时钟纠正；单测 73 项（含基本问答 8） |
+| 2026-11-27 | **语音修订 + 基本问答校准**：恢复用户选定英文音色，中文 Yunxi；流式分句 + 音频预热降延迟；星期/日期/时间改为本地确定性回答，模型回复中的错误时间按本机时钟纠正；单测 73 项（含基本问答 8） |
+| 2026-11-27 | **语种切换初版**：用户选定 6 个 edge-tts 音色；新增 `zh-TW`、`en-GB`、`en-CA`、`en-HK`、`en-US` 固定档位与 `auto/offline`，共八档；每个档位同时决定回复语言和音色；中文提问选英文档也英文回答；桌面“音色”按钮改为“语种”；单测 82 项（语音与语种 13 + 基本问答 16） |
+| 2026-11-27 | **语种/音色解绑**：按用户要求拆开八档绑定，`language_mode` 只管回复语言、`voice_mode` 只管朗读音色，默认 `follow`；旧设置自动迁移；跨语言组合提示但不阻止；桌面改“语言/音色”双下拉；CLI 加 `--voice-mode`；单测 84 项（语音与语种 15 + 基本问答 16） |

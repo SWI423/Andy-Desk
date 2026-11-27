@@ -12,26 +12,53 @@ NOW = datetime(2026, 11, 27, 19, 50)
 
 
 def test_weekday_answer_is_local():
-    out = brain.answer_basic_query("今天星期几", now=NOW)
+    out = brain.answer_basic_query("今天星期几", now=NOW, mode="zh-CN")
     assert out == "今天是 2026年11月27日，星期五。"
     assert "星期日" not in out
 
 
 def test_date_answer_is_local():
-    out = brain.answer_basic_query("今天是几号？", now=NOW)
+    out = brain.answer_basic_query("今天是几号？", now=NOW, mode="zh-CN")
     assert out == "今天是 2026年11月27日，星期五。"
 
 
 def test_time_answer_is_local():
-    out = brain.answer_basic_query("现在几点", now=NOW)
+    out = brain.answer_basic_query("现在几点", now=NOW, mode="zh-CN")
     assert "19:50" in out and "星期五" in out
-    out2 = brain.answer_basic_query("现在是几点？", now=NOW)
+    out2 = brain.answer_basic_query("现在是几点？", now=NOW, mode="zh-CN")
     assert "19:50" in out2
 
 
 def test_task_sentence_not_intercepted():
-    assert brain.answer_basic_query("明天下午三点提醒我交周报", now=NOW) is None
-    assert brain.answer_basic_query("今天星期几提醒我开会", now=NOW) is None
+    assert brain.answer_basic_query("明天下午三点提醒我交周报", now=NOW,
+                                    mode="zh-CN") is None
+    assert brain.answer_basic_query("今天星期几提醒我开会", now=NOW,
+                                    mode="zh-CN") is None
+
+
+def test_english_weekday_answer_uk():
+    out = brain.answer_basic_query("What day is it?", now=NOW, mode="en-GB")
+    assert out == "Today is Friday, 27 November 2026."
+
+
+def test_english_time_answer_us():
+    out = brain.answer_basic_query("What time is it?", now=NOW, mode="en-US")
+    assert out == "It is 19:50 on Friday, November 27, 2026."
+
+
+def test_auto_english_question_gets_english_answer():
+    out = brain.answer_basic_query("What's the date today?", now=NOW, mode="auto")
+    assert out == "Today is Friday, November 27, 2026."
+
+
+def test_forced_english_answers_chinese_question():
+    out = brain.answer_basic_query("今天星期几", now=NOW, mode="en-US")
+    assert out == "Today is Friday, November 27, 2026."
+
+
+def test_zh_tw_time_is_traditional():
+    out = brain.answer_basic_query("现在几点", now=NOW, mode="zh-TW")
+    assert out.startswith("現在是") and "19:50" in out
 
 
 def test_calibrate_full_date_sentence():
@@ -52,4 +79,19 @@ def test_calibrate_keeps_other_date():
 
 def test_calibrate_skips_conditional():
     text = "如果今天是星期日，我就休息。"
+    assert brain.calibrate_reply_time(text, now=NOW) == text
+
+
+def test_calibrate_english_full_date():
+    bad = "Today is Sunday, November 27, 2026 at 14:02."
+    out = brain.calibrate_reply_time(bad, now=NOW)
+    assert out == "Today is Friday, November 27, 2026 at 19:50."
+
+
+def test_calibrate_english_weekday_only():
+    assert brain.calibrate_reply_time("Today is Sunday.", now=NOW) == "Today is Friday."
+
+
+def test_calibrate_english_conditional_skipped():
+    text = "If today is Sunday, I will rest."
     assert brain.calibrate_reply_time(text, now=NOW) == text

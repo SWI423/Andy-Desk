@@ -67,6 +67,21 @@ def fewshot_text() -> str:
     return "\n".join(lines)
 
 
+LANGUAGE_INSTRUCTIONS = {
+    "zh-CN": "本轮默认用简体中文回答；即使用户用英文提问，也用简体中文回答，除非用户明确要求翻译或保留原文。",
+    "zh-TW": "本輪默認用繁體中文（台灣用語）回答，不要使用簡體字；即使用戶用英文提問，也用繁體中文回答，除非用戶明確要求翻譯或保留原文。",
+    "en-US": "Reply in American English by default. Even if the user writes Chinese or tool results are in Chinese, write the final user-facing reply in English unless the user explicitly asks for translation.",
+    "en-GB": "Reply in British English by default (colour, organise, centre). Even if the user writes Chinese or tool results are in Chinese, write the final user-facing reply in English unless the user explicitly asks for translation.",
+    "en-CA": "Reply in Canadian English by default (colour, centre). Even if the user writes Chinese or tool results are in Chinese, write the final user-facing reply in English unless the user explicitly asks for translation.",
+    "en-HK": "Reply in clear English by default, with a natural Hong Kong context where relevant. Even if the user writes Chinese or tool results are in Chinese, write the final user-facing reply in English unless the user explicitly asks for translation.",
+}
+
+
+def language_instruction(mode: str) -> str:
+    """按当前语种模式给模型一条硬约束；auto/offline 不强制"""
+    return LANGUAGE_INSTRUCTIONS.get(mode, "")
+
+
 def build_system_prompt() -> str:
     """system 部分 = 人设 + 示例（两者都恒定，保证前缀稳定）"""
     return SYSTEM_PROMPT + "\n\n" + fewshot_text()

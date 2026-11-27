@@ -26,7 +26,7 @@ Andy Desk 是一个运行在 Windows 桌面的个人事务管理助手：左边�
 | 记长期事实 | “以后十点后别提醒我学习” | `memory_save` → `semantic_facts` |
 | 换说法找往事 | “我那个证的事怎么样了” | embedding-3 语义检索 + 关键词 RRF |
 | 接外部工具 | “用 demo 回显一下这句话” | MCP stdio 客户端 + 权限门 |
-| 语音播报 | 打开输入框旁“语音”开关 | edge-tts / SAPI 兜底 |
+| 语音播报 | 打开输入框旁“语音”开关；在“语言/音色”里分开选回复语种和朗读音色 | edge-tts 六音色 / SAPI 兜底 |
 | 手动管理 | 左侧看板新建 / 开始 / 完成 / 编辑 / 删除 | PyQt6 |
 
 时间规则：说“提醒”但没给钟点时，Andy 会先反问，不会瞎猜一个时间。
@@ -95,18 +95,38 @@ notepad mcp_servers.json
 
 写入型工具默认拒绝；确认安全后，在 `.env` 设 `MCP_ALLOW_WRITE=1`，并在 server 配置里写 `"allow_write": true`，每次执行还会弹确认框。
 
-### 3.2 可选：语音播报
+### 3.2 可选：语音播报、语种与音色
 
-窗口输入框旁有“语音”开关，勾选即生效；旁边的“音色”按钮打开两层音色选择：
+窗口输入框旁有“语音”开关，勾选即生效；旁边的“语言/音色”按钮打开两个独立下拉框：**回复语种**决定 Andy 用哪种语言回答，**朗读音色**只决定用哪个声音读出来，两者不再捆绑。
 
-- **自动**：中文回答用 `zh-CN-YunxiNeural`（`-8%`），英文回答用 `en-US-AndrewNeural`（`-18%`、`-10Hz`）。
-- **在线 · 中文 / 英文**：强制使用对应语言音色。
-- **离线 · Windows 系统语音**：只走 SAPI，断网也能用，音色偏机械。
+回复语种（7 档）：
+
+- **自动**：中文问题用中文回答，英文问题用英文回答。
+- **中文（大陆）**：简体中文。
+- **中文（台灣）**：繁體中文（台灣用語）。
+- **English (US)**：美式英语。
+- **English (UK)**：英式英语（`colour / organise / centre`）。
+- **English (Canada)**：加拿大英语（`colour / centre`）。
+- **English (Hong Kong)**：清晰英文，必要时带香港语境。
+
+朗读音色（8 档，默认 **跟随语种**）：
+
+- **跟随语种**：按回复语种自动选音色——中文用 `zh-CN-YunxiNeural`，繁體用 `zh-TW-HsiaoChenNeural`，英文用 `en-US-BrianMultilingualNeural`（美式）/ `en-GB-RyanNeural`（英式）/ `en-CA-LiamNeural`（加拿大）/ `en-HK-SamNeural`（香港）。
+- **中文（大陆）/ 中文（台灣）/ English (US/UK/Canada/Hong Kong)**：固定指定对应音色，不随回复语种变化。
+- **离线 SAPI**：只走 Windows 系统语音，断网也能用。
+
+语种和音色可以自由组合。比如回复语种选 **English (UK)**、音色选 **中文（大陆）**，Andy 会用英式英语回复，但用 `zh-CN-YunxiNeural` 去读——这种跨语言组合可能不自然，弹窗里会给出提示，但不会阻止你保存。音色列表里的 `en-US-BrianMultilingualNeural` 是多语音色，跨语言相对更稳；其余按地区设计的音色念另一种语言时，建议先点“确定”听一句示例再决定。
+
+![语种与音色分开设置，跨语言组合给出提示](docs/images/voice_dialog_decoupled.png)
+
+选英文语种后，即使你用中文提问，Andy 也会用对应英文回答；中文提问的历史不会把它带回中文。切换后会按当前音色朗读一句示例，方便试听。
 
 也可以先跑终端：
 
 ```powershell
 python main.py --cli --voice
+python main.py --cli --voice --lang en-GB
+python main.py --cli --voice --lang zh-CN --voice-mode en-GB
 ```
 
 或在 `.env` 里设 `TTS_ENABLED=1`。在线用 edge-tts，网络或接口失败会自动退回 Windows SAPI；两者都不可用时只显示文字，不影响对话。
@@ -140,8 +160,9 @@ python scripts/chat_flow.py             # 11 轮连续对话流程（真调模�
 python scripts/backfill_embeddings.py --status   # 查看向量索引状态
 python scripts/mcp_demo_server.py       # demo MCP server（一般由客户端自动拉起，不用手跑）
 
-python -m pytest tests -q               # 73 项单测
-python -m pytest tests/test_basic_answers.py -q   # 基本问答校准 8 项
+python -m pytest tests -q               # 84 项单测
+python -m pytest tests/test_basic_answers.py -q   # 基本问答校准 16 项
+python -m pytest tests/test_voice.py -q           # 语音与语种解绑 15 项
 ```
 
 测试脚本默认使用独立数据库（`data/audit_*`、`data/memeval_*` 等），不会污染正式库 `data/baymax.db`。
@@ -257,14 +278,18 @@ MCP 让 Andy 用“插头”的方式接外部能力，而不是每加一个功�
 
 ---
 
-## 语音播报
+## 语音播报、语种与音色
 
-- 窗口输入框旁有“语音”开关和“音色”按钮，状态存 `QSettings`，下次启动保持。
-- 两层音色：在线可选**中文** `zh-CN-YunxiNeural`（`-8%`）或**英文** `en-US-AndrewNeural`（`-18%`、`-10Hz`），也可选“自动”按回答语言切换；**离线**只走 Windows SAPI。
-- 终端可用 `python main.py --cli --voice`，或在 `.env` 设 `TTS_ENABLED=1`。
-- 合成顺序：**edge-tts 在线**（按 `TTS_VOICE_ZH/EN`）→ 失败退回 **Windows SAPI**（按中/英文选系统语音）→ 都失败只显示文字。
+- 窗口输入框旁有“语音”开关和“语言/音色”按钮，两项设置分别存 `QSettings` 的 `language_mode` 与 `voice_mode`，下次启动保持。
+- **回复语种**七档：自动、中文（大陆）、中文（台灣）、English (US/UK/Canada/Hong Kong）。它只决定回复语言，不决定音色。
+- **朗读音色**八档：跟随语种（默认）、大陆中文、台灣中文、English (US/UK/Canada/Hong Kong)、离线 SAPI。它只决定 `edge-tts` 声音，不改变回复语种。
+- 默认音色：`zh-CN-YunxiNeural`（大陆中文）、`zh-TW-HsiaoChenNeural`（台灣中文）、`en-US-BrianMultilingualNeural`（美式英语）、`en-GB-RyanNeural`（英式）、`en-CA-LiamNeural`（加拿大）、`en-HK-SamNeural`（香港）。语速/音调默认 `+0% / +0Hz`。
+- 语种与音色可自由组合。选到跨语言组合时界面会提示“可能不自然”，但不阻止保存；`en-US-BrianMultilingualNeural` 是多语音色，跨语言相对更稳，其余地区音色的跨语言效果建议试听后再定。
+- 选英文语种后，中文提问也会用对应英文回答；中文历史不会把回复拉回中文。`zh-TW` 会压成繁體中文，避免简体混用。
+- 终端可用 `python main.py --cli --voice --lang en-GB` 只切语种，或再加 `--voice-mode zh-CN` 单独指定音色；也可在 `.env` 设 `TTS_ENABLED=1`。
+- 合成顺序：**edge-tts 在线**（按当前音色设置）→ 失败退回 **Windows SAPI**（按文本语言选系统语音）→ 都失败只显示文字。
 - 播放走独立线程 + 队列，不阻塞对话；新消息会打断上一段播报。
-- **降延迟**：模型流式输出时按句切分，第一句完整就送去合成并播放，不再等整段回复；每段再按 `TTS_CHUNK_CHARS` 切分，音频设备启动时预热。实测 Andrew 首段合成约 2.9~3.6 秒（受网络影响），长回复不再累计到整段合成完才出声。
+- **降延迟**：模型流式输出时按句切分，第一句完整就送去合成并播放，不再等整段回复；每段再按 `TTS_CHUNK_CHARS` 切分，音频设备启动时预热。edge-tts 首段仍有约 3 秒网络/服务开销。
 - 播报前会去掉 Markdown、代码块、链接，超过 `TTS_MAX_CHARS` 自动截断，避免念一大段代码。
 
 ---
@@ -291,7 +316,7 @@ MCP 让 Andy 用“插头”的方式接外部能力，而不是每加一个功�
 - **单用户、无登录**；数据在本地 `data/baymax.db`。
 - 对话依赖网络与智谱 API；断网时看板和提醒仍可用，对话会提示失败原因。
 - **MCP 只支持 stdio server**；远程 HTTP/SSE 传输尚未实现。MCP 工具描述来自外部 server，接入前要确认来源可信，防止提示注入。
-- **语音播报**：在线音色（含英文 `en-US-AndrewNeural`）依赖 edge-tts 网络；离线退回 Windows SAPI（音色较机械）。首段合成仍有约 3 秒网络/服务开销，这是 edge-tts 本身的延迟，不是等整段回复。没有音频设备时只显示文字，不重试轰炸。
+- **语音播报**：在线音色依赖 edge-tts 网络；离线退回 Windows SAPI（音色较机械，且不强制语种）。首段合成仍有约 3 秒网络/服务开销，这是 edge-tts 本身的延迟，不是等整段回复。没有音频设备时只显示文字，不重试轰炸。
 
 ---
 
@@ -300,8 +325,8 @@ MCP 让 Andy 用“插头”的方式接外部能力，而不是每加一个功�
 | 检查 | 方式 | 结果 |
 |---|---|---|
 | 克隆复跑 | 从 GitHub 重新 clone 后 `pytest tests -q` | **59/59 PASS**（提交 `64598b9`，2026-11-27） |
-| 本地全量 | 开发副本 `pytest tests -q` | **73/73 PASS**（含 MCP 7 项、语音 12 项、基本问答 8 项） |
-| 单测 | `pytest tests -q` | 本地 73 项全部通过 |
+| 本地全量 | D 盘与开发副本 `pytest tests -q` | **84/84 PASS**（含 MCP 7 项、语音与语种解绑 15 项、基本问答 16 项） |
+| 单测 | `pytest tests -q` | 本地 84 项全部通过 |
 | 离线功能审计 | `scripts/functional_audit.py` | **50/50 PASS** |
 | 记忆检索评测 | `scripts/memory_eval.py` | 混合 **R@1 100% / R@3 100% / MRR 1.00 / 噪声 0.10** |
 | 记忆扩展复核 | `scripts/eval_memory.py --variant hybrid` | 39 条语料 / 15 问句 **hit@1 100%、MRR 1.00** |
@@ -309,10 +334,13 @@ MCP 让 Andy 用“插头”的方式接外部能力，而不是每加一个功�
 | 多轮连续对话 | `scripts/chat_flow.py` | 11 轮 **4/4 PASS** |
 | 检索降级 | 单测 `test_fallback_when_embedding_down` | 向量不可用时仍按关键词召回 |
 | MCP 链路 | `tests/test_mcp.py` + demo server | 握手、发现、只读调用、写入拒绝/确认、坏命令隔离 **7/7 PASS** |
-| 语音链路 | `tests/test_voice.py` + 真实合成 | 清洗/截断/音色切换/流式分句/降级 **12/12 PASS**；`en-US-AndrewNeural`（`-18%`、`-10Hz`）真实合成成功 |
-| 基本问答校准 | `tests/test_basic_answers.py` + `ask_baymax` 实跑 | 星期/日期/时间 **8/8 PASS**；`今天星期几`、`现在是几点`、`今天是几号` 均本地直接回答，不调模型 |
+| 语音与语种 | `tests/test_voice.py` + 真实合成 | 清洗/截断/音色路由/语种音色解绑/跨语种提示/流式分句/降级 **15/15 PASS**；6 个选定音色真实合成成功 |
+| 解绑独立性 | `set_language_mode` / `set_voice_mode` / `pick_profile` | 切语种不改音色、切音色不改语种；`follow` 按语种自动选音色；跨语言组合给出提示但不拦截 **PASS** |
+| 跨语言合成抽样 | 中文文本 + `en-GB`、英文文本 + `zh-CN`、中文文本 + `en-US` | **3/3 合成成功**；只证明接口接受组合，音质是否自然未主观评分，样本在 `logs/voice_cross/` |
+| 语种实跑 | `brain.ask_baymax("你是谁？")` 切到 en-GB / en-HK / en-US / en-CA / zh-TW | 中文提问分别得到英文/繁體中文回复；`zh-CN` 与 `auto` 保持中文 |
+| 基本问答校准 | `tests/test_basic_answers.py` + `ask_baymax` 实跑 | 中英星期/日期/时间 **16/16 PASS**；中英文错误星期/时间均按本机时钟纠正 |
 | GUI 全流程 | `scripts/smoke_gui.py` | 建任务 → 对话 → 工具结果 → 提醒浮层 → 截图 |
-| 窗口自检 | `python main.py --selftest` | 9 模块健康检查；配好 `.env` 时全 OK，缺 key 仅“对话核心”FAIL |
+| 窗口自检 | `python main.py --selftest` | 10 项检查；配好 `.env` 时全 OK，缺 key 仅“对话核心”FAIL |
 | 并发写 | 8 线程建任务 | 0 错误、8 条全在、无重复 |
 
 未覆盖：长时间挂机跨天、真实到点触发、100 次混合读写压测、多用户 / 多设备、真实第三方 MCP server 兼容性。缺陷与修法见 `docs/TEST_REPORT.md`。

@@ -12,9 +12,12 @@ from openai import OpenAI
 from config import (ZHIPU_API_KEY, ZHIPU_BASE_URL, ZHIPU_CHAT_MODEL,
                     SESSION_ID, MAX_TOOL_ROUNDS, HISTORY_LIMIT)
 from console import logger
-from core import memory, tools
+from core import memory, tools, voice
 
 WEEK_TEXT = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+WEEK_EN = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+MONTH_EN = ["January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December"]
 
 _CLIENT = None
 
@@ -43,35 +46,93 @@ _TIME_SET = {"现在几点", "现在几点钟", "现在时间", "当前时间",
              "现在是几点", "现在是几点钟", "现在几点了", "现在是几点了"}
 _BASIC_BLOCK = ("提醒", "叫我", "闹钟", "安排", "记下", "记住", "明天",
                 "昨天", "后天", "下周", "上周", "周末")
+_EN_WEEKDAY_SET = {"whatdayisit", "whatdayistoday", "whatdayisittoday",
+                   "whichdayisit", "whatdayisitnow", "whatday"}
+_EN_DATE_SET = {"whatdateisit", "whatisthedate", "whatdatetoday",
+                "whatistodaysdate", "todaysdate", "whatdate",
+                "whatistodaydate", "whatsthedatetoday", "whatstodaysdate"}
+_EN_TIME_SET = {"whattimeisit", "whatisthetime", "currenttime",
+                "whattimeisitnow", "timeisit", "whatsthetime",
+                "whattimeisitnow"}
+_EN_BASIC_BLOCK = ("remind", "tomorrow", "yesterday", "schedule", "meeting",
+                   "alarm", "appointment", "plan", "deadline")
+_CJK = re.compile(r"[\u4e00-\u9fff]")
 
 _FULL_TIME = re.compile(
     r"(现在是|今天是|当前是)\s*(\d{4})年(\d{1,2})月(\d{1,2})日"
     r"\s*(星期[一二三四五六日天])(?:\s*(\d{1,2}:\d{2}))?")
 _WEEK_ONLY = re.compile(r"今天(是)?(星期[一二三四五六日天])")
+_EN_WEEK_ONLY = re.compile(
+    r"\b(Today is|It is)\s+(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b"
+    r"(?=\s*[.!?]|$)", re.I)
+_EN_FULL_TIME = re.compile(
+    r"\b(Today is|It is|Now is)\s+"
+    r"(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s+"
+    r"(?:([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})|"
+    r"(\d{1,2})\s+([A-Za-z]+)\s+(\d{4}))"
+    r"(?:\s+at\s+(\d{1,2}:\d{2}))?", re.I)
 _CONDITIONAL = ("如果", "假如", "假设", "要是", "若", "不是", "并非", "除非")
+_EN_CONDITIONAL = ("if ", "suppose", "assuming", "unless", "not ")
 
 
 def _is_conditional(text: str, start: int) -> bool:
     return any(k in text[max(0, start - 6):start] for k in _CONDITIONAL)
 
 
-def answer_basic_query(text: str, now=None):
+def _reply_lang(mode: str, text: str) -> str:
+    if mode.startswith("en-"):
+        return "en"
+    if mode.startswith("zh-"):
+        return "zh"
+    return "zh" if _CJK.search(text or "") else "en"
+
+
+def _en_date_text(now, mode: str) -> str:
+    day, month, year = now.day, MONTH_EN[now.month - 1], now.year
+    if mode in ("en-GB", "en-HK"):
+        return f"{WEEK_EN[now.weekday()]}, {day} {month} {year}"
+    return f"{WEEK_EN[now.weekday()]}, {month} {day}, {year}"
+
+
+def answer_basic_query(text: str, now=None, mode: str = None):
     """只处理短句里的日期/星期/时间；返回 None 表示交给正常对话"""
-    norm = re.sub(r"[？?。！!，,、\s]", "", text or "")
-    if not norm or len(norm) > 16:
+    raw = text or ""
+    norm = re.sub(r"[？?。！!，,、\s'’]", "", raw)
+    if not norm:
+        return None
+    mode = mode or voice.current_language_mode()
+    lang = _reply_lang(mode, raw)
+    low = norm.lower()
+    if len(norm) > 40:
         return None
     if any(k in norm for k in _BASIC_BLOCK):
         return None
+    if any(k in low for k in _EN_BASIC_BLOCK):
+        return None
+    cn_match = (norm in _WEEKDAY_SET or norm in _DATE_SET or norm in _TIME_SET)
+    en_match = (low in _EN_WEEKDAY_SET or low in _EN_DATE_SET
+                or low in _EN_TIME_SET)
+    if not (cn_match or en_match):
+        return None
+
     now = now or datetime.now()
+    if lang == "en":
+        date_text = _en_date_text(now, mode)
+        time_text = now.strftime("%H:%M")
+        if low in _EN_TIME_SET or norm in _TIME_SET:
+            return f"It is {time_text} on {date_text}."
+        return f"Today is {date_text}."
     week = WEEK_TEXT[now.weekday()]
     date_text = f"{now.year}年{now.month}月{now.day}日"
-    if norm in _WEEKDAY_SET:
-        return f"今天是 {date_text}，{week}。"
-    if norm in _DATE_SET:
-        return f"今天是 {date_text}，{week}。"
-    if norm in _TIME_SET:
-        return f"现在是 {date_text} {week} {now.strftime('%H:%M')}。"
-    return None
+    if norm in _TIME_SET or low in _EN_TIME_SET:
+        now_word = "現在" if mode == "zh-TW" else "现在"
+        return f"{now_word}是 {date_text} {week} {now.strftime('%H:%M')}。"
+    return f"今天是 {date_text}，{week}。"
+
+
+def _is_en_conditional(text: str, start: int) -> bool:
+    return any(k in text[max(0, start - 10):start].lower()
+               for k in _EN_CONDITIONAL)
 
 
 def calibrate_reply_time(reply: str, now=None) -> str:
@@ -98,8 +159,41 @@ def calibrate_reply_time(reply: str, now=None) -> str:
             return m.group(0)
         return f"今天{m.group(1) or ''}{WEEK_TEXT[now.weekday()]}"
 
+    def en_full_repl(m):
+        if _is_en_conditional(text, m.start()):
+            return m.group(0)
+        month_s = m.group(3) or m.group(7)
+        day = int(m.group(4) or m.group(6))
+        year = int(m.group(5) or m.group(8))
+        month = {name.lower(): idx + 1 for idx, name in enumerate(MONTH_EN)}.get(
+            month_s.lower())
+        if not month:
+            return m.group(0)
+        try:
+            dt = datetime(year, month, day)
+        except ValueError:
+            return m.group(0)
+        weekday = WEEK_EN[dt.weekday()]
+        time_s = m.group(9)
+        tail = ""
+        if time_s:
+            tail = (f" at {now.strftime('%H:%M')}"
+                    if dt.date() == now.date() else f" at {time_s}")
+        if m.group(3):
+            date_part = f"{MONTH_EN[month - 1]} {day}, {year}"
+        else:
+            date_part = f"{day} {MONTH_EN[month - 1]} {year}"
+        return f"{m.group(1)} {weekday}, {date_part}{tail}"
+
+    def en_week_repl(m):
+        if _is_en_conditional(text, m.start()):
+            return m.group(0)
+        return f"{m.group(1)} {WEEK_EN[now.weekday()]}"
+
     new = _FULL_TIME.sub(full_repl, text)
     new = _WEEK_ONLY.sub(week_repl, new)
+    new = _EN_FULL_TIME.sub(en_full_repl, new)
+    new = _EN_WEEK_ONLY.sub(en_week_repl, new)
     if new != text:
         logger.info("[brain] 校准时间表述：%s -> %s", text[:60], new[:60])
     return new
@@ -275,17 +369,31 @@ def ask_baymax(user_input: str, on_chunk=None, session_id: str = SESSION_ID) -> 
     memory.kick_backfill()
 
     # 3. 组装消息：稳定前缀 → 动态上下文 → 最近原文 → 当前输入
+    from prompts import build_system_prompt, language_instruction
+    lang_note = language_instruction(voice.current_language_mode())
+    system_base = build_system_prompt()
+    if lang_note:
+        system_base += "\n\n" + lang_note
     dynamic = "\n\n".join(p for p in [current_time_text(), ctx["text"]] if p)
 
-    from prompts import build_system_prompt
     messages = [
-        {"role": "system", "content": build_system_prompt()},
+        {"role": "system", "content": system_base},
         {"role": "system", "content": dynamic},
     ]
     for ev in history:
         if ev["content"].strip():
             messages.append({"role": ev["role"], "content": ev["content"]})
-    messages.append({"role": "user", "content": text})
+    # 历史里全是中文时，模型容易跟着中文走；在用户这句前再压一次语种
+    if lang_note:
+        messages.append({"role": "system", "content": lang_note})
+    # 中文提问 + 强制英文时，历史的中文惯性很强；在用户句尾再给一条短约束
+    prompt_text = text
+    mode_now = voice.current_language_mode()
+    if mode_now.startswith("en-") and re.search(r"[\u4e00-\u9fff]", text):
+        prompt_text = f"{text}\n\n[Reply in English only. Do not answer in Chinese.]"
+    elif mode_now == "zh-TW":
+        prompt_text = f"{text}\n\n[請用繁體中文（台灣用語）回答，不要使用簡體字。]"
+    messages.append({"role": "user", "content": prompt_text})
 
     # 4. 工具循环
     called, results, reply, err = [], [], "", None
@@ -362,11 +470,14 @@ def ask_baymax(user_input: str, on_chunk=None, session_id: str = SESSION_ID) -> 
                 and not (_has_write_success(results) or fact_written)):
             logger.warning("[brain] 检测到未落库就宣称完成，去历史重试：%s", reply[:80])
             # 多轮历史会把模型带偏；只留稳定前缀 + 当前时间/上下文 + 这一句
+            retry_tail = [{"role": "user", "content": prompt_text}]
+            if lang_note:
+                retry_tail.insert(0, {"role": "system", "content": lang_note})
             messages = [m for m in messages[:2]] + [{
                 "role": "system",
                 "content": ("这一轮你还没有调用任何工具。必须真实调用合适的工具把事办成；"
                             "缺少信息就说明缺什么并提问，不准再说“已设置/已记下/已完成”。"),
-            }, {"role": "user", "content": text}]
+            }] + retry_tail
             for i in range(2):
                 content, calls = _stream_once(
                     messages, on_chunk=None,

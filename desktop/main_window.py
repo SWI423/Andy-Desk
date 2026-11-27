@@ -432,30 +432,45 @@ class ReminderPage(QWidget):
 # ============ 音色选择 ============
 
 class VoiceDialog(QDialog):
-    """两层音色：在线按语言选（中/英） + 离线 Windows 系统语音"""
+    """回复语种和朗读音色分开选；音色默认跟随语种"""
 
-    MODES = [
-        ("auto", "自动（中文回答用中文音色，英文回答用 Andrew）"),
-        ("zh", "在线 · 中文（zh-CN-YunxiNeural）"),
-        ("en", "在线 · 英文（en-US-AndrewNeural）"),
-        ("offline", "离线 · Windows 系统语音（断网也能用）"),
-    ]
-
-    def __init__(self, current: str = "auto", parent=None):
+    def __init__(self, current_language: str = "auto",
+                 current_voice: str = "follow", parent=None):
         super().__init__(parent)
-        self.setWindowTitle("选择 Andy 的音色")
-        self.setMinimumWidth(460)
+        self.setWindowTitle("选择 Andy 的语种与音色")
+        self.setMinimumWidth(600)
         form = QFormLayout(self)
-        self.combo = QComboBox()
-        for key, label in self.MODES:
-            self.combo.addItem(label, key)
-        idx = max(0, self.combo.findData(current))
-        self.combo.setCurrentIndex(idx if idx >= 0 else 0)
-        form.addRow("音色", self.combo)
-        note = QLabel("在线音色走 edge-tts，需要联网，音质更自然；"
-                      "离线音色走 Windows SAPI，不依赖网络。")
+
+        self.language_combo = QComboBox()
+        for key, label in voice.language_choices():
+            self.language_combo.addItem(label, key)
+        idx = max(0, self.language_combo.findData(current_language))
+        self.language_combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+        self.voice_combo = QComboBox()
+        for key, label in voice.voice_choices():
+            self.voice_combo.addItem(label, key)
+        idx = max(0, self.voice_combo.findData(current_voice))
+        self.voice_combo.setCurrentIndex(idx if idx >= 0 else 0)
+
+        form.addRow("回复语种", self.language_combo)
+        form.addRow("朗读音色", self.voice_combo)
+
+        self.warning = QLabel("")
+        self.warning.setWordWrap(True)
+        self.warning.setStyleSheet("color:#b45309;")
+        form.addRow(self.warning)
+
+        note = QLabel("音色默认「跟随语种」，会按回复语种自动选对应音色。"
+                      "也可以单独指定音色；跨语言朗读可能不自然，"
+                      "界面会提示，但不会阻止你继续。")
         note.setWordWrap(True)
         form.addRow(note)
+
+        self.language_combo.currentIndexChanged.connect(self._update_warning)
+        self.voice_combo.currentIndexChanged.connect(self._update_warning)
+        self._update_warning()
+
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok |
             QDialogButtonBox.StandardButton.Cancel)
@@ -465,8 +480,15 @@ class VoiceDialog(QDialog):
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
 
-    def mode(self) -> str:
-        return self.combo.currentData() or "auto"
+    def _update_warning(self):
+        text = voice.mismatch_warning(self.language_mode(), self.voice_mode())
+        self.warning.setText(text or "当前组合的语种与音色匹配。")
+
+    def language_mode(self) -> str:
+        return self.language_combo.currentData() or "auto"
+
+    def voice_mode(self) -> str:
+        return self.voice_combo.currentData() or "follow"
 
 
 # ============ 主窗口 ============
@@ -499,7 +521,33 @@ class BaymaxWindow(QMainWindow):
         self.settings = QSettings("AndyDesk", "Andy")
         voice_enabled = self.settings.value("tts_enabled", voice.speaker.enabled, type=bool)
         voice.speaker.set_enabled(voice_enabled)
-        voice.set_voice_mode(self.settings.value("voice_mode", "auto", type=str))
+        saved_language = self.settings.value("language_mode", None, type=str)
+        saved_voice = self.settings.value("voice_mode", "follow", type=str)
+        if not saved_language:
+            # 旧版只有一个 voice_mode：zh/en/auto/offline 或绑定的语种档
+            old = saved_voice or "auto"
+            if old == "offline":
+                saved_language, saved_voice = "auto", "sapi"
+            elif old in voice.LANGUAGE_ALIASES:
+                saved_language = voice.LANGUAGE_ALIASES[old]
+                saved_voice = "follow"
+            elif old in voice.LANGUAGE_MODES:
+                saved_language, saved_voice = old, "follow"
+            else:
+                saved_language, saved_voice = "auto", "follow"
+        else:
+            if saved_language == "offline":
+                saved_language = "auto"
+                saved_voice = "sapi"
+            elif saved_language not in voice.LANGUAGE_MODES:
+                saved_language = "auto"
+            if saved_voice not in voice.VOICE_MODES:
+                saved_voice = "follow"
+            # 旧版语种和音色同名绑定：迁移成“同语种 + 跟随音色”
+            if saved_voice == saved_language and saved_voice not in ("follow", "sapi"):
+                saved_voice = "follow"
+        voice.set_language_mode(saved_language)
+        voice.set_voice_mode(saved_voice)
         if voice_enabled:
             voice.speaker.warmup()
         self._voice_feed = voice.StreamFeed()
@@ -600,9 +648,9 @@ class BaymaxWindow(QMainWindow):
         self.voice_check.setToolTip("打开后 Andy 会把回复读出来")
         self.voice_check.setChecked(voice.speaker.enabled)
         self.voice_check.toggled.connect(self._toggle_voice)
-        self.voice_btn = QPushButton("音色")
+        self.voice_btn = QPushButton("语言/音色")
         self.voice_btn.setObjectName("ghost")
-        self.voice_btn.setToolTip("在线中/英音色，或离线系统语音")
+        self.voice_btn.setToolTip(voice.summary_label())
         self.voice_btn.clicked.connect(self._choose_voice)
         self.send_btn = QPushButton("发送")
         self.send_btn.setObjectName("primary")
@@ -644,7 +692,22 @@ class BaymaxWindow(QMainWindow):
     def _greet(self):
         ov = tasks.today_overview()
         who = f"{self.user_name}，" if self.user_name else ""
-        if ov["overdue"] or ov["due_today"]:
+        who_en = f"{self.user_name}, " if self.user_name else ""
+        mode = voice.current_language_mode()
+        if mode.startswith("en-"):
+            if ov["overdue"] or ov["due_today"]:
+                text = (f"{who_en}you have {ov['due_today']} due today and "
+                        f"{ov['overdue']} overdue. Pick one and start; I'll watch the rest.")
+            else:
+                text = (f"{who_en}I'm here. Nothing is pressing today. "
+                        "Tell me what to remember or set a reminder.")
+        elif mode == "zh-TW":
+            if ov["overdue"] or ov["due_today"]:
+                text = (f"{who}今天到期 {ov['due_today']} 項，逾期 {ov['overdue']} 項。"
+                        "先挑一件動工，我幫你盯著剩下的。")
+            else:
+                text = f"{who}我在。今天沒有壓著的事，想記點什麼、設個提醒，直接說。"
+        elif ov["overdue"] or ov["due_today"]:
             text = (f"{who}今天到期 {ov['due_today']} 项，逾期 {ov['overdue']} 项。"
                     f"先挑一件动手，我帮你盯着剩下的。")
         else:
@@ -708,11 +771,14 @@ class BaymaxWindow(QMainWindow):
 
     # ---- 语音 ----
     def _choose_voice(self):
-        dlg = VoiceDialog(voice.current_mode(), self)
+        dlg = VoiceDialog(voice.current_language_mode(), voice.current_voice_mode(), self)
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
-        mode = voice.set_voice_mode(dlg.mode())
-        self.settings.setValue("voice_mode", mode)
+        lang_mode = voice.set_language_mode(dlg.language_mode())
+        voice_mode = voice.set_voice_mode(dlg.voice_mode())
+        self.settings.setValue("language_mode", lang_mode)
+        self.settings.setValue("voice_mode", voice_mode)
+        self.voice_btn.setToolTip(voice.summary_label())
         if voice.speaker.enabled:
             voice.speaker.speak(voice.sample_text())
 

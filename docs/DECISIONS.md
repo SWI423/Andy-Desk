@@ -18,7 +18,7 @@
 - [决策 6：单用户档案，先建档再谈多用户](#决策-6单用户档案先建档再谈多用户)
 - [决策 7：模型"只报喜不落地"——先锁工具，再核对结果，最后丢历史重试](#决策-7模型只报喜不落地先锁工具再核对结果最后丢历史重试)
 - [决策 8：外部能力用 stdio MCP 客户端，不把每个服务写进主代码](#决策-8外部能力用-stdio-mcp-客户端不把每个服务写进主代码)
-- [决策 9：语音用 edge-tts 在线合成，Windows SAPI 兜底](#决策-9语音用-edge-tts-在线合成windows-sapi-兜底)
+- [决策 9：语音用 edge-tts 在线合成，Windows SAPI 兜底，语种与音色分开设置](#决策-9语音用-edge-tts-在线合成windows-sapi-兜底语种与音色分开设置)
 - [决策 10：日期/星期/时间本地确定性回答，不交给模型](#决策-10日期星期时间本地确定性回答不交给模型)
 - [附录 A：参数总表](#附录-a参数总表)
 - [附录 B：代码地图](#附录-b代码地图)
@@ -659,7 +659,7 @@ reply: 好的，模电实验报告已经标记为完成了。
 
 ---
 
-## 决策 9：语音用 edge-tts 在线合成，Windows SAPI 兜底
+## 决策 9：语音用 edge-tts 在线合成，Windows SAPI 兜底，语种与音色分开设置
 
 ### 场景
 你希望 Andy 把回复读出来，最好音色自然；但网络断了、或者 edge 接口抽风时，不能连文字对话一起卡住。
@@ -668,16 +668,49 @@ reply: 好的，模电实验报告已经标记为完成了。
 - **做法 A：只接一个云端 TTS。** 音色最好，但断网就哑，且每次都要等网络。
 - **做法 B：在线为主 + 本地兜底。** 正常走 edge-tts；失败自动切 Windows SAPI；都失败就只显示文字。
 
-### 决定（2026-11-26，2026-11-27 修订）
+### 决定（2026-11-26 初版，2026-11-27 修订为“语种与音色分离”）
 **用做法 B。** 默认关闭，窗口勾选“语音”或 `.env` 设 `TTS_ENABLED=1` 才播；不默认打扰。
 
-音色按语言分两套：中文 `zh-CN-YunxiNeural`（`-8%`）、英文 `en-US-AndrewNeural`（`-18%`、`-10Hz`），`TTS_VOICE` 留空即自动按回答语言选；窗口“音色”提供在线中/英/自动 + 离线 SAPI 四档。
+语种和音色拆成两套独立设置，不再用一个档位同时承担两件事：
+
+- `language_mode`（回复语种）：`auto`、`zh-CN`、`zh-TW`、`en-US`、`en-GB`、`en-CA`、`en-HK`，默认 `auto`。它只决定模型用哪种语言回答。
+- `voice_mode`（朗读音色）：`follow`、`zh-CN`、`zh-TW`、`en-US`、`en-GB`、`en-CA`、`en-HK`、`sapi`，默认 `follow`。它只决定 `edge-tts` 用哪个声音。
+- `follow` 表示“跟着回复语种走”：中文用大陆中文音色、繁體用台灣音色、英文按所选地区选对应英文音色；`auto` 语种下再按文本中英文判断。
+- 手动指定音色后，即使和回复语种不一致也允许保存。界面用 `mismatch_warning()` 提示“跨语言朗读可能不自然”，但不拦截；音质是否可用由用户试听决定。
+- 旧设置自动迁移：旧 `voice_mode=zh/en/auto/offline` 转成“对应语言 + follow/sapi”；旧语种和音色同名的绑定档转成“同语种 + follow”。
+
+| 回复语种 `language_mode` | 回复语言 |
+|---|---|
+| `auto` | 跟随提问语言 |
+| `zh-CN` | 简体中文 |
+| `zh-TW` | 繁體中文（台灣用語） |
+| `en-US` | 美式英语 |
+| `en-GB` | 英式英语 |
+| `en-CA` | 加拿大英语 |
+| `en-HK` | 清晰英文，香港语境 |
+
+| 朗读音色 `voice_mode` | 实际音色 |
+|---|---|
+| `follow` | 按当前回复语种自动选：`zh-CN-YunxiNeural` / `zh-TW-HsiaoChenNeural` / `en-US-BrianMultilingualNeural` / `en-GB-RyanNeural` / `en-CA-LiamNeural` / `en-HK-SamNeural` |
+| `zh-CN` | `zh-CN-YunxiNeural` |
+| `zh-TW` | `zh-TW-HsiaoChenNeural` |
+| `en-US` | `en-US-BrianMultilingualNeural` |
+| `en-GB` | `en-GB-RyanNeural` |
+| `en-CA` | `en-CA-LiamNeural` |
+| `en-HK` | `en-HK-SamNeural` |
+| `sapi` | Windows SAPI 系统语音 |
+
+### 为什么拆开
+初版把语种和音色绑成八档，选 `en-GB` 就同时切“英式英语回复 + `en-GB-RyanNeural` 朗读”。这适合“口音和语言一起换”的场景，但用户可能只想换回复语言、保留熟悉的中文音色，或者只想试另一个英文嗓子而不改回复语言。绑定档位无法表达这些组合，所以拆成两个独立键。
+
+代价是允许出现跨语言组合：按地区/locale 设计的音色（`en-GB-RyanNeural`、`en-CA-LiamNeural`、`en-HK-SamNeural`、`zh-CN-YunxiNeural`、`zh-TW-HsiaoChenNeural`）念另一种语言时通常不自然，部分组合可能合成失败。`en-US-BrianMultilingualNeural` 是多语音色，跨语言相对更稳。因此设计成“提示但不阻止”，把最终判断交给用户试听，而不是替用户禁掉组合。
 
 ### 流程
 1. `speak(text)` 先判开关；关闭直接返回 False。
 2. `clean_tts_text()` 去代码块、行内代码、Markdown 链接、URL、HTML 标签、符号、emoji，压缩空白，超过 `TTS_MAX_CHARS=240` 按句号截断。
 3. 新消息打断上一段：`stop(clear=True)` 停 pygame、清队列；工作线程取到新文本后清中断标记。
-4. `pick_profile()` 定音色：显式 `TTS_VOICE` 优先；否则中文用 `TTS_VOICE_ZH`、英文用 `TTS_VOICE_EN`。
+4. `pick_profile()` 定音色：显式 `voice_mode` 对应的音色优先；`follow` 时按当前 `language_mode` 选对应地区音色，`auto` 再按文本中英文判断；`sapi` 不选在线音色。
+4.1 `set_language_mode(mode)` 只改回复语种状态，并同步给模型 `LANGUAGE_INSTRUCTIONS` 约束；它不再改 `TTS_VOICE`、`TTS_RATE`、`TTS_PITCH`。`set_voice_mode(mode)` 只改音色状态与 `TTS_VOICE/TTS_RATE/TTS_PITCH`，`follow` 清空显式音色，`sapi` 设 `speaker.prefer_offline=True`。旧设置档位在 `BaymaxWindow.__init__` 里迁移成这两个键，避免直接覆盖用户配置。
 5. `split_tts_text()` 按中英标点把回复切成约 `TTS_CHUNK_CHARS=80` 字的小段；`StreamFeed` 在模型流式输出时按句推送，第一句完整就送去合成，不等整段回复。
 6. `_play_edge()` 逐段查缓存（`logs/tts/<sha1>.mp3`，key 含 voice/rate/pitch/volume/text），没有就 `edge_tts.Communicate(..., pitch=...)` 合成；失败重试 1 次，再退回 SAPI。
 7. `_play_file()` 用 pygame 播放，轮询 `get_busy()`，被中断就 `music.stop()`；启动时 `warmup()` 预热音频设备。
@@ -689,24 +722,31 @@ reply: 好的，模电实验报告已经标记为完成了。
 |---|---|---|---|---|
 | `clean_tts_text(text)` | `voice` | 原始回复 | 可朗读文本 | 不清洗 → 把代码、URL、Markdown 符号全念出来 |
 | `Speaker.speak(text, interrupt=True)` | 单例 `speaker` | 文本、是否打断 | bool | 阻塞调用 → 窗口卡住；不清队列 → 旧回复排队念 |
-| `pick_profile(text)` | `voice` | 文本 | `{voice,rate,pitch,lang}` | 不按语言选 → 中文用英文音色，发音错乱 |
+| `pick_profile(text)` | `voice` | 文本 | `{voice,rate,pitch,lang}` | 不按语言选 → 中文用英文音色；忽略显式音色 → 用户选了嗓子又被覆盖 |
 | `split_tts_text(text, max_len)` | `voice` | 文本、段长 | 句子列表 | 切太碎 → 请求变多；不切 → 首句等整段合成 |
 | `StreamFeed.feed(delta)` | `voice` | 流式增量 | 完整句子列表 | 不按句切 → 仍要等整段回复才出声 |
 | `Speaker._play_edge(text)` | 内部 | 文本 | bool | 不设超时 → 网络挂起时 worker 卡死 |
 | `Speaker._play_file(path)` | 内部 | mp3 路径 | bool | 不轮询中断 → 用户发新消息后还在念旧内容 |
 | `Speaker._play_sapi(text, lang)` | 内部 | 文本、语言 | bool | 不按 lang 选 → 英文文本用中文声音念 |
-| `set_voice_mode(mode)` | `voice` | auto/zh/en/offline | 实际模式 | 切 offline 不清队列 → 上一段在线语音还在播 |
+| `set_language_mode(mode)` | `voice` | auto/zh-CN/zh-TW/en-US/en-GB/en-CA/en-HK（兼容 zh/en/offline） | 实际语种 | 把它当音色设置用 → 语种换了但嗓子没换，或反过来 |
+| `set_voice_mode(mode)` | `voice` | follow/zh-CN/zh-TW/en-US/en-GB/en-CA/en-HK/sapi | 实际音色 | 只改语言不改它 → 音色仍停在旧嗓子；`sapi` 不清显式音色 → 在线音色仍被尝试 |
+| `current_language_mode()` / `current_language()` | `voice` | 无 | 语种档位 / `zh`、`en` 或空 | 用 `TTS_VOICE` 反推语种 → 显式音色会误导判断 |
+| `current_voice_mode()` | `voice` | 无 | `follow/sapi/地区档` | 把它当语种读 → 跨语言组合被误判 |
+| `mismatch_warning(language, voice)` | `voice` | 语种、音色 | 提示文本或空串 | 不提示 → 用户选到不自然组合却不知道 |
+| `language_instruction(mode)` | `prompts` | 语种档位 | 语言约束文本 | 不注入 → 模型跟着历史中文回答 |
+| `language_choices()` / `voice_choices()` | `voice` | 无 | `[(key, label)]` | UI 写死档位 → 新语种/音色选不到 |
 | `health_check()` | `voice` | 无 | bool | 只看 import 不看设备 → 有库但没声卡时仍报 OK（播放时会降级） |
 
 ### 代价与边界
 - edge-tts 需要网络，首段合成实测约 2.9~3.6 秒（受网络影响）；同一段有缓存，重复不再请求。
-- 在线英文音色是 `en-US-AndrewNeural`，中文是 `zh-CN-YunxiNeural`；不做“让 Andrew 念中文”这种跨语言强行合成。
-- SAPI 音色比 edge 机械，语速/音量可调但情感有限；离线模式只能选系统已安装的声音。
+- 六套在线音色都真实存在于 edge-tts。语种与音色已解绑，允许跨语言组合，但不保证音质：按地区设计的音色念另一种语言通常不自然，部分组合可能合成失败；`en-US-BrianMultilingualNeural` 是多语音色，跨语言相对更稳。界面只提示，不替用户禁用组合。
+- 英文语种只控制拼写/用词，地区口音由对应音色体现；模型不保证 100% 不混入美式拼写，必要时后续加拼写后处理。
+- SAPI 音色比 edge 机械，语速/音量可调但情感有限；离线模式只能选系统已安装的声音，且不强制回复语种。
 - 只做 TTS，不做 ASR；不能语音输入，也不能词级同步高亮。
 - 播放依赖 pygame/SDL 音频设备；设备不可用时只显示文字，不反复重试。
 - 长回复截断到 240 字，避免念完整篇报告；需要完整朗读可调大 `TTS_MAX_CHARS`。
 
-**验证**：`tests/test_voice.py` 12/12（清洗、截断、音色切换、分句、流式句切、队列、降级、健康检查）；真实合成 `en-US-AndrewNeural`（`-18%`、`-10Hz`）成功，首段 3.65 秒；中文 `zh-CN-YunxiNeural` 首段 3.92 秒。
+**验证**：`tests/test_voice.py` 15/15（清洗、截断、音色路由、语种与音色独立、旧值迁移、跨语种提示、`follow` 跟随、分句、流式句切、队列、降级、健康检查）；6 个选定音色真实合成成功（`logs/voice_check/`）；真实模型 `brain.ask_baymax("你是谁？")` 在 `en-GB/en-HK/en-US/en-CA` 下均返回英文，在 `zh-TW` 下返回繁體中文，`zh-CN/auto` 保持中文。解绑后 `set_language_mode("en-GB")` + `set_voice_mode("zh-CN")` 仍保持英文回复、音色为 `zh-CN-YunxiNeural`，两项互不覆盖。
 
 ---
 
@@ -773,12 +813,19 @@ Andy 在窗口里回答“现在是 2026年11月27日 星期日 14:02”：日�
 | `MCP_MAX_TOOLS` | 24 | 同上 | 最多暴露给模型的 MCP 工具数 | 调大 → schema 挤占上下文 |
 | `MCP_ALLOW_WRITE` | 0 | 同上 | 写入型 MCP 工具总开关 | 设 1 仍需 server 级 `allow_write` + 逐次确认 |
 | `TTS_ENABLED` | 0 | 同上 | 语音总开关 | 设 1 启动即开；也可用窗口复选框 |
+| `language_mode`（QSettings） | `auto` | `desktop/main_window.py` | 回复语种 | 和音色混用 → 改语言时误换嗓子 |
+| `voice_mode`（QSettings） | `follow` | 同上 | 朗读音色 | 设为 `sapi` 时仍保留显式在线音色 → 会先尝试在线合成 |
 | `TTS_VOICE` | 空 | 同上 | 留空=按语言自动；填了=强制音色 | 填错音色名 → 合成失败，退回 SAPI |
-| `TTS_VOICE_ZH` | `zh-CN-YunxiNeural` | 同上 | 在线中文音色 | 换音色要清 `logs/tts` 缓存或改配置后重播 |
-| `TTS_VOICE_EN` | `en-US-AndrewNeural` | 同上 | 在线英文音色 | 同上 |
-| `TTS_RATE_ZH/EN` | `-8%` / `-18%` | 同上 | 中/英语速 | 调大 → 更快但听不清 |
-| `TTS_PITCH_ZH/EN` | `+0Hz` / `-10Hz` | 同上 | 中/英音调 | 调太低 → 声音发闷 |
-| `TTS_RATE/PITCH` | `-18%` / `-10Hz` | 同上 | 强制 `TTS_VOICE` 时的参数 | 与固定音色配合使用 |
+| `TTS_VOICE_ZH` | `zh-CN-YunxiNeural` | 同上 | 大陆中文音色 | 换音色要清 `logs/tts` 缓存或改配置后重播 |
+| `TTS_VOICE_ZH_TW` | `zh-TW-HsiaoChenNeural` | 同上 | 台灣中文音色 | 同上 |
+| `TTS_VOICE_EN` | `en-US-BrianMultilingualNeural` | 同上 | 自动模式英文音色 | 同上 |
+| `TTS_VOICE_EN_US` | `en-US-BrianMultilingualNeural` | 同上 | 美式英语音色 | 同上 |
+| `TTS_VOICE_EN_GB` | `en-GB-RyanNeural` | 同上 | 英式英语音色 | 同上 |
+| `TTS_VOICE_EN_CA` | `en-CA-LiamNeural` | 同上 | 加拿大英语音色 | 同上 |
+| `TTS_VOICE_EN_HK` | `en-HK-SamNeural` | 同上 | 香港英语音色 | 同上 |
+| `TTS_RATE_ZH/EN` | `+0%` / `+0%` | 同上 | 中/英语速 | 调大 → 更快但听不清 |
+| `TTS_PITCH_ZH/EN` | `+0Hz` / `+0Hz` | 同上 | 中/英音调 | 调太低 → 声音发闷 |
+| `TTS_RATE/PITCH` | `+0%` / `+0Hz` | 同上 | 强制 `TTS_VOICE` 时的参数 | 与固定音色配合使用 |
 | `TTS_CHUNK_CHARS` | 80 字 | 同上 | 分句合成段长 | 调小 → 首句更快但请求更多；调大 → 首句更慢 |
 | `TTS_MAX_CHARS` | 240 字 | 同上 | 单次播报上限 | 调大 → 长回复念很久 |
 | `TTS_SAPI_RATE` | 175 | 同上 | SAPI 兜底语速 | 调大 → 更急促 |
@@ -826,12 +873,12 @@ Andy 在窗口里回答“现在是 2026年11月27日 星期日 14:02”：日�
 | 提醒规则算得对不对 | `python -m core.scheduler` | 打印 once/daily/weekly 的 `compute_next` 结果 |
 | 工具是否真的执行 | `python scripts/check_multi_tool.py` | 日志出现 `[tool] task_update ... -> True`；脚本每次跑用独立测试库，不污染正式数据 |
 | 建档内容 | `python scripts/init_user.py --show` | 显示 Wen / 2026-11-25 / Andy |
-| 单元测试 | `python -m pytest tests -q` | 73 passed（含 MCP 7、语音 12、基本问答 8） |
-| 基本问答校准 | `python -m pytest tests/test_basic_answers.py -q` | 8 passed：星期/日期/几点本地回答，任务句不拦截，错误时间纠正，条件句不误改 |
+| 单元测试 | `python -m pytest tests -q` | 84 passed（含 MCP 7、语音与语种解绑 15、基本问答 16） |
+| 基本问答校准 | `python -m pytest tests/test_basic_answers.py -q` | 16 passed：星期/日期/几点本地回答，任务句不拦截，错误时间纠正，条件句不误改 |
 | MCP 协议与权限 | `python -m pytest tests/test_mcp.py -q` | 7 passed：握手、发现、只读、写入拒绝/确认、坏命令隔离 |
 | MCP 真实配置 | 复制 `mcp_servers.example.json` 为 `mcp_servers.json`，启动 `python main.py --selftest` | 日志出现“MCP：1 个 server，3 个工具” |
-| 语音清洗与降级 | `python -m pytest tests/test_voice.py -q` | 12 passed |
-| 语音真实链路 | 勾选窗口“语音”并打开“音色”或 `python main.py --cli --voice` | 中文 Yunxi、英文 Andrew；断网退回 SAPI 或只显示文字 |
+| 语音清洗与降级 | `python -m pytest tests/test_voice.py -q` | 15 passed |
+| 语音真实链路 | 勾选窗口“语音”并打开“语言/音色”，或 `python main.py --cli --voice --lang en-GB --voice-mode zh-CN` | 语种和音色可分别切换；中文提问选英文语种也会英文回答；跨语言组合有提示但可保存；断网退回 SAPI 或只显示文字 |
 | 离线功能审计 | `python scripts/functional_audit.py` | 50 项全 PASS，独立库 |
 | 记忆检索评测 | `python scripts/memory_eval.py` | 混合 R@1 100% / R@3 100% / MRR 1.00 / 噪声 0.10 |
 | 任务场景评测 | `python scripts/task_eval.py` | 18 场景 19/19 PASS（真调模型） |
@@ -879,3 +926,4 @@ Andy 在窗口里回答“现在是 2026年11月27日 星期日 14:02”：日�
 | 2026-11-25 | 新增决策 7：模型只报喜不落地时，意图锁定 + 结果核对 + 丢历史重试；补参数与被误伤场景的修正记录 |
 | 2026-11-26 | 决策 2、4 由 Wen 授权 Andy 决定：两项均保持现状，补记理由与升级触发条件 |
 | 2026-11-26 | 新增决策 8（stdio MCP 客户端 + 权限门）与决策 9（edge-tts + SAPI 兜底）；决策 5 标注“MCP 已接 stdio、HTTP 仍未做” |
+| 2026-11-27 | 决策 9 修订：语种与音色从“八档绑定”拆成 `language_mode` / `voice_mode` 两个独立设置，默认音色跟随语种，跨语言组合提示但不阻止；补旧设置迁移与解绑测试 |

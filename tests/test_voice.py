@@ -36,13 +36,96 @@ def test_split_keeps_sentences_and_limit():
     assert "".join(chunks) == text
 
 
+def _reset():
+    voice.set_language_mode("auto")
+    voice.set_voice_mode("follow")
+
+
 def test_pick_profile_zh_and_en(monkeypatch):
+    _reset()
     monkeypatch.setattr(voice, "TTS_VOICE", "")
     zh = voice.pick_profile("你好，我是 Andy。")
     en = voice.pick_profile("Hello, I am Andy.")
     assert zh["voice"] == voice.TTS_VOICE_ZH and zh["lang"] == "zh"
     assert en["voice"] == voice.TTS_VOICE_EN and en["lang"] == "en"
     assert en["pitch"] == voice.TTS_PITCH_EN
+
+
+def test_language_and_voice_are_independent():
+    try:
+        # 语种决定回复语言；音色跟随语种时自动选对应音色
+        assert voice.set_language_mode("en-GB") == "en-GB"
+        assert voice.set_voice_mode("follow") == "follow"
+        assert voice.current_language_mode() == "en-GB"
+        assert voice.current_voice_mode() == "follow"
+        assert voice.current_language() == "en"
+        assert voice.pick_profile("你好")["voice"] == voice.TTS_VOICE_EN_GB
+
+        # 音色单独覆盖，不改变回复语种
+        assert voice.set_voice_mode("zh-CN") == "zh-CN"
+        assert voice.current_language_mode() == "en-GB"
+        assert voice.current_voice_mode() == "zh-CN"
+        assert voice.TTS_VOICE == voice.TTS_VOICE_ZH
+        assert voice.pick_profile("Hello")["voice"] == voice.TTS_VOICE_ZH
+
+        # 切语种不会偷偷改音色
+        assert voice.set_language_mode("zh-TW") == "zh-TW"
+        assert voice.current_voice_mode() == "zh-CN"
+        assert voice.TTS_VOICE == voice.TTS_VOICE_ZH
+    finally:
+        _reset()
+
+
+def test_legacy_voice_modes_still_map():
+    try:
+        assert voice.set_language_mode("zh") == "zh-CN"
+        assert voice.set_language_mode("en") == "en-US"
+        assert voice.set_language_mode("offline") == "auto"
+        assert voice.current_voice_mode() == "sapi"
+        assert voice.speaker.prefer_offline is True
+        assert voice.set_voice_mode("offline") == "sapi"
+        assert voice.current_language_mode() == "auto"
+        assert voice.set_voice_mode("follow") == "follow"
+        assert voice.speaker.prefer_offline is False
+    finally:
+        _reset()
+
+
+def test_all_selected_voices_are_mapped():
+    chosen = {"zh-CN": "zh-CN-YunxiNeural",
+              "zh-TW": "zh-TW-HsiaoChenNeural",
+              "en-US": "en-US-BrianMultilingualNeural",
+              "en-GB": "en-GB-RyanNeural",
+              "en-CA": "en-CA-LiamNeural",
+              "en-HK": "en-HK-SamNeural"}
+    try:
+        for mode, voice_name in chosen.items():
+            voice.set_voice_mode(mode)
+            assert voice.current_voice_mode() == mode
+            assert voice.TTS_VOICE == voice_name
+            assert voice.voice_locale(mode) in ("zh", "en")
+    finally:
+        _reset()
+
+
+def test_mismatch_warning_and_sample():
+    try:
+        voice.set_language_mode("zh-CN")
+        voice.set_voice_mode("en-GB")
+        warning = voice.mismatch_warning()
+        assert "另一语言" in warning
+        assert voice.sample_text().startswith("Hello")
+
+        voice.set_language_mode("en-GB")
+        voice.set_voice_mode("follow")
+        assert voice.mismatch_warning() == ""
+        assert voice.sample_text().startswith("Hello")
+
+        voice.set_language_mode("auto")
+        voice.set_voice_mode("en-GB")
+        assert "自动" in voice.mismatch_warning()
+    finally:
+        _reset()
 
 
 def test_stream_feed_speaks_first_sentence():
@@ -64,25 +147,10 @@ def test_stream_feed_flush_tail():
     assert feed.flush() == ["I am here."]
 
 
-def test_voice_modes_switch():
-    try:
-        assert voice.set_voice_mode("zh") == "zh"
-        assert voice.current_mode() == "zh"
-        assert voice.TTS_VOICE == voice.TTS_VOICE_ZH
-        assert voice.set_voice_mode("en") == "en"
-        assert voice.TTS_VOICE == voice.TTS_VOICE_EN
-        assert voice.set_voice_mode("offline") == "offline"
-        assert voice.speaker.prefer_offline is True
-        assert voice.set_voice_mode("auto") == "auto"
-        assert voice.speaker.prefer_offline is False
-        assert voice.current_mode() == "auto"
-    finally:
-        voice.set_voice_mode("auto")
-
-
 def test_play_edge_splits_and_reports_voice(tmp_path, monkeypatch):
     played = []
     sp = voice.Speaker(enabled=True)
+    _reset()
     monkeypatch.setattr(voice, "TTS_VOICE", "")
     monkeypatch.setattr(voice, "TTS_CHUNK_CHARS", 14)
 
