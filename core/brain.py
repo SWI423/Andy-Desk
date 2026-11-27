@@ -106,7 +106,7 @@ def _stream_once(messages: list, on_chunk=None, tool_choice="auto"):
     stream = _client().chat.completions.create(
         model=ZHIPU_CHAT_MODEL,
         messages=messages,
-        tools=tools.TOOLS,
+        tools=tools.get_tools(),
         tool_choice=tool_choice,
         stream=True,
         temperature=0.5,

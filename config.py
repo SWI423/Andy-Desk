@@ -48,6 +48,22 @@ RECENCY_MIN_WEIGHT = float(os.getenv("RECENCY_MIN_WEIGHT", "0.35"))         # �
 RECALL_SIM_GATE = float(os.getenv("RECALL_SIM_GATE", "0.80"))               # 只保留接近最高语义分的候选
 RECALL_INTENT_BOOST = float(os.getenv("RECALL_INTENT_BOOST", "0.08"))       # 问句与内容同主题时的小幅加权
 
+# === MCP 扩展（外部工具）===
+MCP_ENABLED = os.getenv("MCP_ENABLED", "1").lower() not in ("0", "false", "off")
+MCP_CONFIG_PATH = os.path.join(BASE_DIR, os.getenv("MCP_CONFIG_PATH", "mcp_servers.json"))
+MCP_TIMEOUT = float(os.getenv("MCP_TIMEOUT", "20"))        # 单次请求超时（秒）
+MCP_MAX_TOOLS = int(os.getenv("MCP_MAX_TOOLS", "24"))     # 最多暴露给模型的 MCP 工具数
+MCP_ALLOW_WRITE = os.getenv("MCP_ALLOW_WRITE", "0").lower() in ("1", "true", "on")
+
+# === 语音（TTS）===
+TTS_ENABLED = os.getenv("TTS_ENABLED", "0").lower() in ("1", "true", "on")
+TTS_VOICE = os.getenv("TTS_VOICE", "zh-CN-YunxiNeural")   # edge-tts 中文男声
+TTS_RATE = os.getenv("TTS_RATE", "-8%")                   # 稍慢一点，便于听清
+TTS_VOLUME = os.getenv("TTS_VOLUME", "+0%")
+TTS_MAX_CHARS = int(os.getenv("TTS_MAX_CHARS", "240"))    # 单次播报上限，避免长回答念太久
+TTS_SAPI_RATE = int(os.getenv("TTS_SAPI_RATE", "175"))    # pyttsx3 兜底语速
+TTS_SAPI_VOLUME = float(os.getenv("TTS_SAPI_VOLUME", "0.9"))
+
 # === 领域定义（三线）===
 DOMAINS = {
     "study": "学习",

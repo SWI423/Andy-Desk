@@ -8,9 +8,9 @@
 
 ## 一、一句话结论
 
-主链路已经可用：**离线功能审计 50/50、单元测试 46 项全过、真实模型任务评测 19/19、11 轮多轮对话 4/4、GUI 冒烟 PASS、7 模块自检 OK**。
+主链路已经可用：**离线功能审计 50/50、单元测试 59 项全过、真实模型任务评测 19/19、11 轮多轮对话 4/4、GUI 冒烟 PASS、9 模块自检（配好 `.env` 时全 OK）**。本轮另加 MCP 7 项、语音 6 项专项测试，均通过。
 
-本轮共修掉 **23 个真实缺陷**，其中 4 个属于“用户以为办好了、系统其实没办”的严重问题；记忆检索从 **R@1 70% 提升到 100%**，top3 噪声从 **0.70 降到 0.10**。修复过程中自己引入过 2 个回归（提醒查询被误判、建任务被强制调用导致截止时间丢失），都已在交付前修掉并纳入回归用例。
+本轮共修掉 **23 个真实缺陷**，其中 4 个属于“用户以为办好了、系统其实没办”的严重问题；记忆检索从 **R@1 70% 提升到 100%**，top3 噪声从 **0.70 降到 0.10**。修复过程中自己引入过 2 个回归（提醒查询被误判、建任务被强制调用导致截止时间丢失），都已在交付前修掉并纳入回归用例。另完成 **stdio MCP 客户端框架** 与 **TTS 语音播报**，验证见第三节 F。
 
 ---
 
@@ -19,13 +19,15 @@
 | 测试 | 脚本 | 覆盖内容 | 结果 |
 |---|---|---|---|
 | 离线功能审计 | `scripts/functional_audit.py` | 8 张表与级联删除、任务增删改查/排序/拆解、事实蒸馏、上下文预算、工具契约、调度补发、时间拦截、JSON 解析、tool_call id 对齐，共 50 项 | **50/50 PASS** |
-| 单元测试 | `pytest tests -q` | 原有 23 项 + 本轮 23 项回归，覆盖下面每个已修缺陷 | **46 passed** |
+| 单元测试 | `pytest tests -q` | 原有 23 项 + 本轮 23 项回归 + MCP 7 项 + 语音 6 项 | **59 passed** |
 | 记忆评测 | `scripts/memory_eval.py` | 24 条带时间戳语料 + 8 条噪声 + 10 个换说法问句；对比关键词/向量/混合三路，统计 R@1、R@3、MRR、噪声、耗时 | **混合 R@1 100%、R@3 100%、MRR 1.00、噪声 0.10** |
 | 记忆扩展复核 | `scripts/eval_memory.py --variant hybrid` | 另一套 39 条语料 + 15 个概括式/指代式问句，防止只在 10 问句上“刷分” | **hit@1 100%、hit@3 100%、MRR 1.00** |
 | 任务评测 | `scripts/task_eval.py` | 18 个真实模型场景、19 个断言：建任务/相对日期/查询/完成/开始/进度/拆解/提醒/每日提醒/重复/别名/偏好/身份/过去时间/一句话两件事 | **19/19 PASS** |
 | 多轮对话流程 | `scripts/chat_flow.py` | 11 轮连续对话：建任务→拆解→开始→完成→记过敏→设提醒→闲聊多轮→跨轮问过敏→跨轮问答辩进展 | **4/4 PASS**，第 11 轮能查出准确状态 |
 | GUI 冒烟 | `scripts/smoke_gui.py` | 建任务→发消息→模型调工具→提醒浮层→截图 | **PASS**，截图 `logs/gui_flow.png` |
-| 窗口自检 | `main.py --selftest` | 记忆/任务/调度/工具/数据库/向量层/模型配置 7 项 | **全部 OK**，截图 `logs/selftest_window.png` |
+| 窗口自检 | `main.py --selftest` | 记忆/任务/调度/工具/数据库/向量层/模型配置/MCP/语音 9 项 | **配好 `.env` 时全 OK**；开发副本缺 key 时仅“对话核心”FAIL，截图 `logs/selftest_window.png` |
+| MCP 链路 | `tests/test_mcp.py` + `scripts/mcp_demo_server.py` | 启动 demo server、握手、工具发现、只读调用、写入拒绝/确认、坏命令隔离、无配置 | **7/7 PASS** |
+| 语音链路 | `tests/test_voice.py` + 真实合成 | 清洗、截断、关闭、队列、edge 失败降级 SAPI、健康检查；真实合成与播放 | **6/6 PASS**；mp3 30,960 字节，pygame 解码成功 |
 | 并发写 | 8 线程同时建任务 | SQLite 单写锁是否丢数据/报错 | **0 错误、8 条全在、无重复** |
 
 说明：
@@ -97,6 +99,28 @@
 | 查“我设了哪些提醒”时，回复“您设置了一个提醒”被误判成假报喜 | 拦截规则过宽，查询类回复也命中 | 只有本轮确实要求写入（提醒/更新/记一下）才启用拦截 |
 | 强制模型调 `task_create` 后，“明天要交周报”的截止时间丢了 | 强制工具打乱了模型自己排 due/domain | 建任务不再强制，交回模型；仍由假报喜兜底 |
 
+### F. 新增能力：MCP 与语音
+
+这两块不是“修 bug”，是新能力，单独列出验证范围，避免和上面的回归混在一起。
+
+| 能力 | 检查 | 结果 |
+|---|---|---|
+| MCP 握手 | `initialize` → `notifications/initialized` → `tools/list`，demo server 返回 3 个工具 | PASS |
+| MCP 命名 | `echo` 暴露为 `mcp__demo__echo`；非法字符被替换，符合 OpenAI function name 规则 | PASS |
+| MCP 只读 | `readOnlyHint=true` 的 `now` 不弹确认直接执行 | PASS |
+| MCP 写入拒绝 | 全局未开 `MCP_ALLOW_WRITE` 时 `write_note` 返回拒绝，文件未变 | PASS |
+| MCP 写入确认 | 全局 + server 都开、确认回调返回 True 后写入；返回 False 则不写 | PASS |
+| MCP 隔离 | `command` 不存在时只记录错误，不抛异常、不影响其他 server | PASS |
+| MCP 无配置 | `mcp_servers.json` 不存在时 `health_check` 仍为 True，内置工具正常 | PASS |
+| 语音清洗 | 代码块、链接、URL、Markdown 符号、emoji 被去掉；空白压缩 | PASS |
+| 语音截断 | 超过 `TTS_MAX_CHARS` 在句号处截断，不截半句 | PASS |
+| 语音关闭 | `TTS_ENABLED=0` 时 `speak()` 直接返回 False，不合成 | PASS |
+| 语音降级 | edge 抛异常时走 SAPI 分支，`last_backend` 标记正确 | PASS |
+| 语音队列 | 连续 `speak()` 只保留最新一条，旧任务被丢弃 | PASS |
+| 真实合成 | edge-tts 合成中文短句，输出 mp3 30,960 字节；`Speaker.last_backend=edge-tts` | PASS |
+| 真实播放 | pygame 在真实声卡初始化 `mixer (44100, -16, 2)`，能加载并播放该 mp3 | PASS |
+| SAPI 可用 | 系统识别到 `Microsoft Huihui Desktop - Chinese (Simplified)` | PASS |
+
 ---
 
 ## 四、修复前后对比
@@ -104,7 +128,8 @@
 | 指标 | 修复前 | 修复后 |
 |---|---|---|
 | 离线功能审计 | 40/50 | **50/50** |
-| 单元测试 | 23 项 | **46 项全过** |
+| 单元测试 | 23 项 | **59 项全过**（含 MCP 7、语音 6） |
+| MCP / 语音 | 未实现 | **MCP 7/7、语音 6/6 通过**；真实合成与播放成功 |
 | 记忆混合 R@1 | 70% | **100%** |
 | 记忆 MRR | 0.85 | **1.00** |
 | top3 噪声 | 0.70 | **0.10** |
@@ -124,6 +149,9 @@
 6. **单用户、无鉴权、无多设备同步**；换电脑要拷 `data/baymax.db`。
 7. **向量仍可能带噪声**，没有 rerank 模型；阈值是小语料标定值。
 8. **标题模糊匹配**（“答辩稿那项”）匹配到多条时会反问编号，这是安全行为，但体验上还可以再优化（例如让用户点选候选）。
+9. **MCP 只支持 stdio**：没有远程 HTTP/SSE、OAuth、断线重连；真实第三方 server 兼容性未验证，只在 demo 上跑通。
+10. **MCP 工具描述来自外部 server**：默认不完全可信，恶意 server 可能诱导模型调用危险工具；目前靠“写入双开关 + 逐次确认”兜底，没有做工具级白名单。
+11. **语音只做 TTS，不做 ASR**：不能语音输入；edge-tts 需要网络，离线只能 SAPI，音色较机械；没有做词级同步和长文分段。
 
 ---
 
@@ -138,12 +166,13 @@ D:\prgramf\Anaconda3\envs\baymax\python.exe scripts\task_eval.py
 D:\prgramf\Anaconda3\envs\baymax\python.exe scripts\chat_flow.py
 D:\prgramf\Anaconda3\envs\baymax\python.exe scripts\smoke_gui.py
 D:\prgramf\Anaconda3\envs\baymax\python.exe main.py --selftest
+D:\prgramf\Anaconda3\envs\baymax\python.exe -m pytest tests\test_mcp.py tests\test_voice.py -q
 ```
 
-预期：46 passed / 50 通过 / R@1 100% / 19 通过 / 4 通过 / PASS / 7 项 OK。
+预期：59 passed / 50 通过 / R@1 100% / 19 通过 / 4 通过 / PASS / 9 项检查（配好 `.env` 全 OK）；MCP 7 + 语音 6 通过。
 
 ---
 
 ## 七、结论
 
-这轮之后，Andy 在“记忆能不能想起来”“说了的事有没有真的写进去”“任务和提醒状态对不对”这三件核心事情上，比上一版可靠了一个档位。剩下的主要是真实使用中的长尾表达、长时间挂机和多用户问题，不影响现在单机试用。
+这轮之后，Andy 在“记忆能不能想起来”“说了的事有没有真的写进去”“任务和提醒状态对不对”这三件核心事情上，比上一版可靠了一个档位；同时补上了“接外部工具”和“把回复读出来”两块扩展能力。剩下的主要是真实使用中的长尾表达、长时间挂机、多用户、远程 MCP 与 ASR，不影响现在单机试用。

@@ -7,6 +7,7 @@ Andy（Baymax_pro） 主入口
 """
 
 import argparse
+import atexit
 import sys
 
 from config import check_config, ensure_dirs
@@ -24,6 +25,8 @@ def health_report():
         ("工具系统", "core.tools"),
         ("数据库", "core.db"),
         ("向量层", "core.embedding"),
+        ("MCP 客户端", "core.mcp_client"),
+        ("语音层", "core.voice"),
     ):
         try:
             mod = __import__(importer, fromlist=["health_check"])
@@ -37,10 +40,21 @@ def health_report():
     return ok_all
 
 
-def run_cli():
-    from core import brain, tasks
+def _cli_confirm_mcp(server: str, tool: str, args: dict) -> bool:
+    """终端模式下写入型 MCP 工具必须逐次确认"""
+    print(f"\n[MCP 写入请求] {server} / {tool}\n参数：{args}")
+    try:
+        return input("允许执行？(y/N) > ").strip().lower() in ("y", "yes")
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+
+def run_cli(voice_on: bool = False):
+    from core import brain, tasks, voice
     from core.profile import get_user_name
     name = get_user_name()
+    if voice_on:
+        voice.speaker.set_enabled(True)
     print(f"Andy CLI{' · ' + name if name else ''}。输入 exit 退出。")
     print(tasks.overview_text())
     while True:
@@ -52,10 +66,14 @@ def run_cli():
             break
         if not text:
             continue
+        if voice_on:
+            voice.speaker.stop()
         res = brain.ask_baymax(text, on_chunk=lambda s: print(s, end="", flush=True))
         print()
         if res.get("tools_called"):
             print(f"[工具] {', '.join(res['tools_called'])}")
+        if voice_on and not res.get("error"):
+            voice.speaker.speak(res.get("reply", ""))
 
 
 def run_gui(selftest: bool = False):
@@ -90,6 +108,7 @@ def main():
     parser = argparse.ArgumentParser(description="Andy · 三线管理助手")
     parser.add_argument("--cli", action="store_true", help="终端模式")
     parser.add_argument("--selftest", action="store_true", help="窗口自检后自动退出")
+    parser.add_argument("--voice", action="store_true", help="终端模式下开启语音播报")
     args = parser.parse_args()
 
     logger.info("=" * 44)
@@ -110,10 +129,28 @@ def main():
         memory.kick_backfill()
     else:
         logger.info("向量检索已关闭（EMBED_ENABLED=0），使用关键词检索")
+
+    from core import mcp_client
+    if args.cli:
+        mcp_client.set_confirm_callback(_cli_confirm_mcp)
+    mcp_client.start_all()
+    atexit.register(mcp_client.shutdown)
+    from core import voice
+    atexit.register(voice.speaker.shutdown)
+    st = mcp_client.get_manager().status()
+    if not st["enabled"]:
+        logger.info("MCP：已关闭（MCP_ENABLED=0）")
+    elif not st["configured"]:
+        logger.info("MCP：未配置 mcp_servers.json，仅使用内置工具")
+    else:
+        logger.info("MCP：%s 个 server，%s 个工具", len(st["servers"]), len(st["tools"]))
+        for err in st["errors"]:
+            logger.warning("MCP 连接失败：%s", err)
+
     health_report()
 
     if args.cli:
-        run_cli()
+        run_cli(voice_on=args.voice)
     else:
         run_gui(selftest=args.selftest)
 

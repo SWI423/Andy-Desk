@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "demo": {
+      "command": "python",
+      "args": ["scripts/mcp_demo_server.py"],
+      "cwd": ".",
+      "env": {
+        "MCP_DEMO_NOTE": "logs/mcp_demo_note.txt"
+      },
+      "enabled": true,
+      "allow_write": false,
+      "assume_read_only": false,
+      "timeout": 20
+    }
+  }
+}

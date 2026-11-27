@@ -17,6 +17,9 @@ logs/
 .env
 venv/
 
+# MCP 实际配置（可能含本机路径/密钥）
+mcp_servers.json
+
 # IDE
 .vscode/
 .idea/

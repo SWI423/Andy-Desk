@@ -12,14 +12,16 @@ PyQt6>=6.5.0           # 桌宠窗口、聊天面板
 numpy>=1.24.0          # 向量相似度计算
 
 # === 工具 ===
-APScheduler>=3.10.0    # 定时调度（提醒、久坐检测）
+APScheduler>=3.10.0    # 提醒心跳调度
 python-dotenv>=1.0.0   # 读取 .env 环境变量
+
+# === 语音（TTS）===
+edge-tts>=7.0.0        # 在线语音合成（主用）
+pyttsx3>=2.90          # Windows SAPI 离线兜底
+pygame>=2.5.0          # 播放 mp3
 
 # === 测试 ===
 pytest>=7.0.0          # 单元测试
-
-# === P1 语音（后续装）===
-# volcengine-python-sdk  # 豆包 TTS/ASR
 
 # === P2 桌面自动化（后续装）===
 # wxauto>=0.1.0          # 微信自动化

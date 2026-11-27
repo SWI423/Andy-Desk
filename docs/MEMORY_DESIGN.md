@@ -409,7 +409,7 @@ CREATE INDEX IF NOT EXISTS idx_reminder_next ON reminders(next_fire_at, enabled)
 
 **ADR-007：工具层用"schema 列表 + 注册表"，作为扩展性主入口。**
 - 新增一个能力 = `TOOLS` 加一条 schema + `TOOL_REGISTRY` 加一个函数，`brain` 不改。
-- 未做 MCP / FastAPI 适配：按 PRD 的 ADR-002，本期不引入 HTTP 服务；后续把工具实现替换成"HTTP 调用"或"MCP client 调用"即可，schema 与对话层不变。
+- MCP 已接 stdio（`core/mcp_client.py`，自研 JSON-RPC，未用第三方 SDK）；FastAPI / 远程 HTTP 适配仍未做：后续把工具实现替换成"HTTP 调用"或"远程 MCP 调用"即可，schema 与对话层不变。
 
 **ADR-008：检索改为 embedding + 关键词混合（取代 ADR-003）。**
 - 索引：新增 `event_vectors(event_id, model, dim, vec BLOB, created_at)`，`vec` 为归一化后的 float32（embedding-3 实测 2048 维）；`event_id` 主键，重复写入用 `INSERT OR REPLACE`。

@@ -7,9 +7,11 @@
 """
 
 import html
+import json
+import threading
 from datetime import datetime
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QTimer
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QTimer, QSettings
 from PyQt6.QtGui import QTextCursor, QColor
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QTabWidget,
@@ -20,7 +22,7 @@ from PyQt6.QtWidgets import (
 )
 
 from config import APP_NAME, DOMAINS, ensure_dirs
-from core import db, tasks, scheduler, brain
+from core import db, tasks, scheduler, brain, voice
 
 
 # ============ 后台线程 ============
@@ -44,6 +46,11 @@ class ChatWorker(QThread):
 
 class SchedulerBridge(QObject):
     fired = pyqtSignal(dict)
+
+
+class MCPConfirmBridge(QObject):
+    """后台对话线程 -> 主线程弹确认框：跨线程不能直接开 QMessageBox"""
+    ask = pyqtSignal(str, str, dict, object, object)
 
 
 # ============ 任务编辑对话框 ============
@@ -441,6 +448,18 @@ class BaymaxWindow(QMainWindow):
         self.sched = scheduler.Scheduler(on_fire=lambda p: self.bridge.fired.emit(p))
         self.sched.start()
 
+        self.mcp_bridge = MCPConfirmBridge()
+        self.mcp_bridge.ask.connect(self._on_mcp_confirm_request)
+        try:
+            from core import mcp_client
+            mcp_client.set_confirm_callback(self._confirm_mcp)
+        except Exception:
+            pass
+
+        self.settings = QSettings("AndyDesk", "Andy")
+        voice_enabled = self.settings.value("tts_enabled", voice.speaker.enabled, type=bool)
+        voice.speaker.set_enabled(voice_enabled)
+
         self._worker = None
         self._build_ui()
         self._refresh_all()
@@ -532,10 +551,15 @@ class BaymaxWindow(QMainWindow):
         self.input = QLineEdit()
         self.input.setPlaceholderText("比如：明天下午三点提醒我交周报 / 软考冲刺记到学习里")
         self.input.returnPressed.connect(self.send)
+        self.voice_check = QCheckBox("语音")
+        self.voice_check.setToolTip("打开后 Andy 会把回复读出来")
+        self.voice_check.setChecked(voice.speaker.enabled)
+        self.voice_check.toggled.connect(self._toggle_voice)
         self.send_btn = QPushButton("发送")
         self.send_btn.setObjectName("primary")
         self.send_btn.clicked.connect(self.send)
         input_row.addWidget(self.input, 1)
+        input_row.addWidget(self.voice_check)
         input_row.addWidget(self.send_btn)
         rv.addLayout(input_row)
         split.addWidget(right)
@@ -600,6 +624,8 @@ class BaymaxWindow(QMainWindow):
             return
         if self._worker and self._worker.isRunning():
             return
+        if voice.speaker.enabled:
+            voice.speaker.stop()
         self.input.clear()
         self._append_user(text)
         self.chat.append(f"<p style='color:#0f766e'><b>{APP_NAME}</b></p>")
@@ -622,6 +648,40 @@ class BaymaxWindow(QMainWindow):
         self.chat.insertPlainText(text)
         self.chat.verticalScrollBar().setValue(self.chat.verticalScrollBar().maximum())
 
+    # ---- 语音 ----
+    def _toggle_voice(self, on: bool):
+        voice.speaker.set_enabled(on)
+        self.settings.setValue("tts_enabled", bool(on))
+        if on:
+            voice.speaker.speak("语音已打开。")
+
+    # ---- MCP 写入确认（后台线程 → 主线程）----
+    def _confirm_mcp(self, server: str, tool: str, args: dict) -> bool:
+        if threading.current_thread() is threading.main_thread():
+            return self._ask_mcp_confirm(server, tool, args)
+        event = threading.Event()
+        box = {}
+        self.mcp_bridge.ask.emit(server, tool, dict(args or {}), event, box)
+        event.wait(30)
+        return bool(box.get("ok"))
+
+    def _on_mcp_confirm_request(self, server, tool, args, event, box):
+        try:
+            box["ok"] = self._ask_mcp_confirm(server, tool, args)
+        finally:
+            event.set()
+
+    def _ask_mcp_confirm(self, server: str, tool: str, args: dict) -> bool:
+        detail = json.dumps(args or {}, ensure_ascii=False)
+        if len(detail) > 300:
+            detail = detail[:300] + "…"
+        return QMessageBox.question(
+            self, "MCP 写入确认",
+            f"MCP 服务「{server}」请求执行写入工具：\n{tool}\n\n参数：{detail}\n\n允许执行吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        ) == QMessageBox.StandardButton.Yes
+
     def _on_done(self, res: dict):
         self.send_btn.setEnabled(True)
         self.input.setEnabled(True)
@@ -631,6 +691,9 @@ class BaymaxWindow(QMainWindow):
         if res.get("error"):
             self.chat.append(f"<p style='color:#b45309'>{html.escape(res['error'][:200])}</p>")
         self.chat.append("")
+        reply = (res.get("reply") or "").strip()
+        if reply and not res.get("error") and voice.speaker.enabled:
+            voice.speaker.speak(reply)
 
     # ---- 提醒回调（调度器线程 -> Qt 主线程）----
     def _on_reminder(self, payload: dict):
@@ -642,10 +705,13 @@ class BaymaxWindow(QMainWindow):
         self._toast_timer.start(8000)
         QApplication.alert(self, 0)
         self._refresh_all()
+        if voice.speaker.enabled:
+            voice.speaker.speak(f"提醒：{content}")
 
     def closeEvent(self, event):
         if self._worker and self._worker.isRunning():
             self._worker.wait(2000)
+        voice.speaker.shutdown()
         self.sched.shutdown()
         super().closeEvent(event)
 

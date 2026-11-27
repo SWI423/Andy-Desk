@@ -14,9 +14,11 @@
 - [决策 2：提醒用"每 30 秒看一眼表"，不是每条挂一个闹钟](#决策-2提醒用每-30-秒看一眼表不是每条挂一个闹钟)
 - [决策 3：长期事实有两条路——规则抓 + 模型主动记](#决策-3长期事实有两条路规则抓--模型主动记)
 - [决策 4：对话直接调接口，不用 LangChain](#决策-4对话直接调接口不用-langchain)
-- [决策 5：这一期不做 HTTP，也不接 MCP](#决策-5这一期不做-http也不接-mcp)
+- [决策 5：这一期不做 HTTP；MCP 后来只接了 stdio](#决策-5这一期不做-httpmcp-后来只接了-stdio)
 - [决策 6：单用户档案，先建档再谈多用户](#决策-6单用户档案先建档再谈多用户)
 - [决策 7：模型"只报喜不落地"——先锁工具，再核对结果，最后丢历史重试](#决策-7模型只报喜不落地先锁工具再核对结果最后丢历史重试)
+- [决策 8：外部能力用 stdio MCP 客户端，不把每个服务写进主代码](#决策-8外部能力用-stdio-mcp-客户端不把每个服务写进主代码)
+- [决策 9：语音用 edge-tts 在线合成，Windows SAPI 兜底](#决策-9语音用-edge-tts-在线合成windows-sapi-兜底)
 - [附录 A：参数总表](#附录-a参数总表)
 - [附录 B：代码地图](#附录-b代码地图)
 - [附录 C：怎么自己验证这些说法](#附录-c怎么自己验证这些说法)
@@ -489,10 +491,12 @@ reply: 好的，模电实验报告已经标记为完成了。
 
 ---
 
-## 决策 5：这一期不做 HTTP，也不接 MCP
+## 决策 5：这一期不做 HTTP；MCP 后来只接了 stdio
+
+> 2026-11-26 更新：MCP 已按**决策 8** 实现 stdio 客户端；远程 HTTP/SSE 与 FastAPI 仍未做。本节保留当时的取舍，避免"文档说没接、代码已经接了"。
 
 ### 一句话
-**现在窗口直接调本地函数；以后要接你的 FastAPI 或 MCP，只换"执行那一层"，工具说明书和对话逻辑不动。**
+**现在窗口直接调本地函数；外部能力走 stdio MCP；HTTP 服务仍未接。工具说明书和对话逻辑不动。**
 
 ### 场景
 
@@ -604,6 +608,98 @@ reply: 好的，模电实验报告已经标记为完成了。
 
 ---
 
+## 决策 8：外部能力用 stdio MCP 客户端，不把每个服务写进主代码
+
+### 场景
+你想让 Andy 查日历、搜本地文件、开浏览器。按第一版的工具注册表，每接一个能力都要改 `core/tools.py`、重启程序；接五个就是五段互不相干的代码，权限也各写各的。
+
+### 两种做法
+- **做法 A：全部写成内置工具。** 简单、可控，但核心仓库会越来越胖，第三方服务更新一次就要改一次代码。
+- **做法 B：MCP 客户端。** Andy 启动时读配置，连上外部 server，自动发现对方有哪些工具，再转成模型能看懂的 schema。加服务只改配置。
+
+### 决定（2026-11-26）
+**用做法 B，先实现 stdio 传输的 MCP 客户端，不引入第三方 `mcp` SDK。** 理由：协议本身不复杂（JSON-RPC 2.0 + 换行分隔），自己写能精确控制超时、权限、错误隔离，也少一层依赖。远程 HTTP/SSE 这一期不做。
+
+### 流程（从启动到调用）
+1. `main.py` 调 `mcp_client.start_all()`，读 `mcp_servers.json`；文件不存在就只记一条日志，内置工具照常用。
+2. 每个启用的 server 起一个子进程：`command + args`，工作目录 `cwd`，环境变量合并 `env`。
+3. 发 `initialize`（协议版本、clientInfo），收到结果后发 `notifications/initialized`。
+4. 调 `tools/list`，支持 `nextCursor` 翻页；每个工具取 `name / description / inputSchema / annotations`。
+5. 适配成 `mcp__<server>__<tool>`：名字只留字母数字下划线横线，避免和内置工具重名；描述加 `[MCP:server]` 前缀。
+6. 模型选中后，`tools.call_tool()` 按前缀路由；`MCPManager` 先过权限门，再发 `tools/call`。
+7. 返回 `content` 里的文本或 `structuredContent`；`isError=true` 收敛成 `{"ok": false, "error": ...}`，不打断整轮对话。
+
+### 函数卡片
+| 函数 | 归属 | 参数 | 返回 | 用错后果 |
+|---|---|---|---|---|
+| `load_servers(path)` | `mcp_client` | 配置文件路径 | `{name: ServerConfig}` | 不校验 `command` → 启动时才炸；相对 `cwd` 不按配置文件目录解析 → 找不到脚本 |
+| `MCPClient.start()` | 单个 server | 无 | 无（失败抛异常） | 不设超时 → 一个坏 server 卡住整个启动 |
+| `MCPClient._request(method, params, timeout)` | 单个 server | 方法、参数、超时 | `result` 字典 | 并发写同一 stdin 不加锁 → 响应串包；不按 id 匹配 → 拿错结果 |
+| `MCPClient.list_tools()` | 单个 server | 无 | 原始工具列表 | 不处理 `nextCursor` → 只拿到第一页 |
+| `MCPClient.call_tool(name, args)` | 单个 server | 原始工具名、参数 | `{ok, content/error}` | 把 `isError` 当成功 → 模型以为办成了 |
+| `MCPManager._adapt_tool(server, cfg, raw)` | 管理器 | server 名、配置、原始工具 | 无（写入 `tools`/`_by_name`） | 不设上限 → 工具 schema 撑爆上下文；不判 `readOnlyHint` → 写入工具被当只读放行 |
+| `MCPManager.call_tool(fn_name, args)` | 管理器 | 带前缀的函数名、参数 | 工具结果 | 不查权限 → 外部工具直接改你的文件/日程 |
+| `tools.get_tools()` | 工具层 | 无 | 内置 + MCP schema | 只返回内置 → 模型永远看不到 MCP 工具 |
+
+### 权限与隔离
+- **只读**：`annotations.readOnlyHint=true` 直接放行；server 配置 `assume_read_only=true` 可把整台 server 当只读。
+- **写入**：必须同时满足全局 `MCP_ALLOW_WRITE=1` 和 server 配置 `allow_write=true`，并且有确认回调；终端是 y/N，窗口是主线程 Qt 对话框（后台线程通过信号回主线程，不能直接开 `QMessageBox`）。
+- **无回调**：默认拒绝，不猜用户意图。
+- **失败隔离**：某个 server 启动失败、超时、进程退出，只进 `errors` 并跳过；`health_check` 报 FAIL，但内置任务/提醒/记忆不受影响。
+- **注入风险**：工具描述和返回内容都来自外部 server，默认不完全可信；不把返回文本当系统指令执行，写入必须确认。
+
+### 代价与边界
+- 只支持 stdio；远程 HTTP/SSE、OAuth、断线重连、自动拉起都还没做。
+- 一个 server 一个进程；server 挂了不会自动重启，要等下次启动。
+- 工具最多暴露 `MCP_MAX_TOOLS=24` 个，单次请求超时 `MCP_TIMEOUT=20s`；工具太多会挤占上下文。
+- `mcp_servers.json` 可能含本机路径/密钥，已加入 `.gitignore`；仓库只留 `mcp_servers.example.json`。
+
+**验证**：`tests/test_mcp.py` 7/7（握手、发现、只读、写入拒绝、写入确认、坏命令隔离、无配置）；本地 demo server 真实跑通 `tools.get_tools()` 暴露 11 个工具、`call_tool()` 路由 echo 和 write_note。
+
+---
+
+## 决策 9：语音用 edge-tts 在线合成，Windows SAPI 兜底
+
+### 场景
+你希望 Andy 把回复读出来，最好音色自然；但网络断了、或者 edge 接口抽风时，不能连文字对话一起卡住。
+
+### 两种做法
+- **做法 A：只接一个云端 TTS。** 音色最好，但断网就哑，且每次都要等网络。
+- **做法 B：在线为主 + 本地兜底。** 正常走 edge-tts；失败自动切 Windows SAPI；都失败就只显示文字。
+
+### 决定（2026-11-26）
+**用做法 B。** 默认关闭，窗口勾选“语音”或 `.env` 设 `TTS_ENABLED=1` 才播；不默认打扰。
+
+### 流程
+1. `speak(text)` 先判开关；关闭直接返回 False。
+2. `clean_tts_text()` 去代码块、行内代码、Markdown 链接、URL、HTML 标签、符号、emoji，压缩空白，超过 `TTS_MAX_CHARS=240` 按句号截断。
+3. 新消息打断上一段：`stop(clear=True)` 停 pygame、清队列；工作线程取到新文本后清中断标记。
+4. `_play_edge()` 先查缓存（`logs/tts/<sha1>.mp3`），没有就 `edge_tts.Communicate(...).save()`；`asyncio.wait_for` 限 25 秒。
+5. `_play_file()` 用 pygame 播放，轮询 `get_busy()`，被中断就 `music.stop()`。
+6. edge 失败 → `_play_sapi()`：pyttsx3 新建 engine，优先选 `zh`/`Chinese` 声音，`runAndWait()`；失败只警告一次。
+7. `shutdown()` 停线程、清队列、退出 mixer。
+
+### 函数卡片
+| 函数 | 归属 | 参数 | 返回 | 用错后果 |
+|---|---|---|---|---|
+| `clean_tts_text(text)` | `voice` | 原始回复 | 可朗读文本 | 不清洗 → 把代码、URL、Markdown 符号全念出来 |
+| `Speaker.speak(text, interrupt=True)` | 单例 `speaker` | 文本、是否打断 | bool | 阻塞调用 → 窗口卡住；不清队列 → 旧回复排队念 |
+| `Speaker._play_edge(text)` | 内部 | 文本 | bool | 不设超时 → 网络挂起时 worker 卡死 |
+| `Speaker._play_file(path)` | 内部 | mp3 路径 | bool | 不轮询中断 → 用户发新消息后还在念旧内容 |
+| `Speaker._play_sapi(text)` | 内部 | 文本 | bool | 每次新建 engine 较重，但能避免复用状态出错 |
+| `health_check()` | `voice` | 无 | bool | 只看 import 不看设备 → 有库但没声卡时仍报 OK（播放时会降级） |
+
+### 代价与边界
+- edge-tts 需要网络，首句有 1~2 秒合成延迟；同一句有缓存，重复不再请求。
+- SAPI 音色比 edge 机械，语速/音量可调但情感有限。
+- 只做 TTS，不做 ASR；不能语音输入，也不能词级同步高亮。
+- 播放依赖 pygame/SDL 音频设备；设备不可用时只显示文字，不反复重试。
+- 长回复截断到 240 字，避免念完整篇报告；需要完整朗读可调大 `TTS_MAX_CHARS`。
+
+**验证**：`tests/test_voice.py` 6/6（清洗、截断、关闭、队列、降级、健康检查）；真实 edge-tts 合成 30KB mp3，pygame 解码时长正常。
+
+---
+
 ## 附录 A：参数总表
 
 | 参数 | 值 | 出处 | 作用 | 调大/调小的后果 |
@@ -625,6 +721,15 @@ reply: 好的，模电实验报告已经标记为完成了。
 | `RRF_K` | 60 | 同上 | 融合平滑常数 | 调大 → 名次差异影响变小 |
 | 关键词阈值 | 0.35 | `memory._keyword_candidates` | 关键词侧下限 | 调低 → "今天""了"造成误召回 |
 | `EMBED_BACKFILL_MAX` | 400 条/轮 | 同上 | 每轮后台补多少向量 | 调大 → 补得快，但一次占用接口更久 |
+| `MCP_ENABLED` | 1 | `config.py` | MCP 总开关 | 设 0 → 只加载内置工具，不启动任何 MCP 进程 |
+| `MCP_TIMEOUT` | 20 秒 | 同上 | 单次 MCP 请求超时 | 调小 → 慢 server 被频繁判死；调大 → 卡住更久 |
+| `MCP_MAX_TOOLS` | 24 | 同上 | 最多暴露给模型的 MCP 工具数 | 调大 → schema 挤占上下文 |
+| `MCP_ALLOW_WRITE` | 0 | 同上 | 写入型 MCP 工具总开关 | 设 1 仍需 server 级 `allow_write` + 逐次确认 |
+| `TTS_ENABLED` | 0 | 同上 | 语音总开关 | 设 1 启动即开；也可用窗口复选框 |
+| `TTS_VOICE` | `zh-CN-YunxiNeural` | 同上 | edge-tts 音色 | 换音色要清 `logs/tts` 缓存或改配置后重播 |
+| `TTS_RATE` | `-8%` | 同上 | 语速 | 调大 → 更快但听不清 |
+| `TTS_MAX_CHARS` | 240 字 | 同上 | 单次播报上限 | 调大 → 长回复念很久 |
+| `TTS_SAPI_RATE` | 175 | 同上 | SAPI 兜底语速 | 调大 → 更急促 |
 | `TICK_SECONDS` | 30 秒 | `scheduler.py` | 心跳间隔 | 调小 → 更准但唤醒多 |
 | `MISS_GRACE_MINUTES` | 10 分钟 | 同上 | 迟到多久算"错过"（≤10 分钟算"刚到点"，也会补发） | 调小 → 更多被标成"错过"；调大 → 更多算"刚到点" |
 | 事实长度 | 1~60 字 | `memory.extract_facts` | 单条事实上限 | 调大 → 注入变长 |
@@ -646,7 +751,10 @@ reply: 好的，模电实验报告已经标记为完成了。
 | 向量化、余弦、向量缓存 | `core/embedding.py` | `embed_texts` / `embed_query` / `cosine` / `to_blob` |
 | 任务、子任务、进度、概览 | `core/tasks.py` | `create_task` / `update_task` / `find_by_title` / `today_overview` |
 | 提醒规则、心跳、补发 | `core/scheduler.py` | `parse_expr` / `compute_next` / `create_reminder` / `Scheduler` |
-| 工具清单、执行、错误兜底 | `core/tools.py` | `TOOLS` / `TOOL_REGISTRY` / `call_tool` |
+| 工具清单、执行、错误兜底 | `core/tools.py` | `get_tools` / `TOOL_REGISTRY` / `call_tool` |
+| MCP 协议、工具发现、权限门 | `core/mcp_client.py` | `load_servers` / `MCPClient` / `MCPManager` / `make_function_name` |
+| MCP demo server | `scripts/mcp_demo_server.py` | `echo` / `now` / `write_note` |
+| 语音清洗、合成、播放 | `core/voice.py` | `clean_tts_text` / `Speaker` / `health_check` |
 | 对话、工具循环、时间拦截 | `core/brain.py` | `ask_baymax` / `_stream_once` / `needs_time_clarify` |
 | 首位用户建档 | `core/profile.py` | `ensure_first_user` / `get_user_name` |
 | 窗口、看板、提醒浮层 | `desktop/main_window.py` | `BaymaxWindow` / `TaskPage` / `ReminderPage` |
@@ -666,7 +774,11 @@ reply: 好的，模电实验报告已经标记为完成了。
 | 提醒规则算得对不对 | `python -m core.scheduler` | 打印 once/daily/weekly 的 `compute_next` 结果 |
 | 工具是否真的执行 | `python scripts/check_multi_tool.py` | 日志出现 `[tool] task_update ... -> True`；脚本每次跑用独立测试库，不污染正式数据 |
 | 建档内容 | `python scripts/init_user.py --show` | 显示 Wen / 2026-11-25 / Andy |
-| 单元测试 | `python -m pytest tests -q` | 46 passed（含 23 项本轮回归） |
+| 单元测试 | `python -m pytest tests -q` | 59 passed（含 MCP 7、语音 6） |
+| MCP 协议与权限 | `python -m pytest tests/test_mcp.py -q` | 7 passed：握手、发现、只读、写入拒绝/确认、坏命令隔离 |
+| MCP 真实配置 | 复制 `mcp_servers.example.json` 为 `mcp_servers.json`，启动 `python main.py --selftest` | 日志出现“MCP：1 个 server，3 个工具” |
+| 语音清洗与降级 | `python -m pytest tests/test_voice.py -q` | 6 passed |
+| 语音真实链路 | 勾选窗口“语音”或 `python main.py --cli --voice` | 能听到回复；断网时退回 SAPI 或只显示文字 |
 | 离线功能审计 | `python scripts/functional_audit.py` | 50 项全 PASS，独立库 |
 | 记忆检索评测 | `python scripts/memory_eval.py` | 混合 R@1 100% / R@3 100% / MRR 1.00 / 噪声 0.10 |
 | 任务场景评测 | `python scripts/task_eval.py` | 18 场景 19/19 PASS（真调模型） |
@@ -696,6 +808,11 @@ reply: 好的，模电实验报告已经标记为完成了。
 | 12 | 多用户/多设备不支持 | 单租户、本地库 | 换电脑要拷库 | HTTP + 账号 |
 | 13 | token 是估算 | 中英混合不精确 | 预算判断有偏差 | 接 tokenizer 精确计数 |
 | 14 | 对话与向量都依赖网络 | 对话走智谱；向量走 embedding 接口 | 断网不能聊；向量挂了自动退回关键词，本地功能仍可用 | 本地小模型兜底（成本高，暂不做） |
+| 15 | MCP 只支持 stdio | 没有 HTTP/SSE 传输、OAuth、断线重连 | 只能接本机 server；远程服务要另做传输层 | 后续加 HTTP/SSE + 超时重连 |
+| 16 | MCP 写入默认全关 | 全局 `MCP_ALLOW_WRITE=0`，server 还要 `allow_write=true` | 忘了开就一直拒绝，不会误写 | 按需开；每次仍会确认 |
+| 17 | MCP 工具描述不完全可信 | 描述和返回来自外部 server | 恶意 server 可能诱导模型调用危险工具 | 只接可信 server；写工具逐次确认；不把返回当指令 |
+| 18 | 语音依赖网络与音频设备 | edge-tts 需联网；SAPI 需声卡 | 断网首句慢；无设备时静音 | 失败只提示一次，不阻塞文字；可调 SAPI 兜底 |
+| 19 | 只做 TTS，不做 ASR | 没有麦克风输入、没有唤醒词 | 只能听，不能说 | 后续加按住说话 + ASR 服务 |
 
 ---
 
@@ -708,3 +825,4 @@ reply: 好的，模电实验报告已经标记为完成了。
 | 2026-11-25 | 决策 1 改为 embedding 实测版：写入 2048 维向量、中心化余弦、向量+关键词 RRF、后台补索引、失败降级；同步参数表与边界 |
 | 2026-11-25 | 新增决策 7：模型只报喜不落地时，意图锁定 + 结果核对 + 丢历史重试；补参数与被误伤场景的修正记录 |
 | 2026-11-26 | 决策 2、4 由 Wen 授权 Andy 决定：两项均保持现状，补记理由与升级触发条件 |
+| 2026-11-26 | 新增决策 8（stdio MCP 客户端 + 权限门）与决策 9（edge-tts + SAPI 兜底）；决策 5 标注“MCP 已接 stdio、HTTP 仍未做” |

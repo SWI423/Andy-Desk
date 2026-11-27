@@ -240,11 +240,30 @@ TOOL_REGISTRY = {
 }
 
 
+def get_tools() -> list:
+    """内置工具 + 已连接的 MCP 工具；模型每次请求都从这里取 schema"""
+    merged = list(TOOLS)
+    try:
+        from core import mcp_client
+        merged.extend(mcp_client.get_openai_tools())
+    except Exception as e:
+        # MCP 只做增量，坏了不能影响内置任务/提醒
+        from console import logger
+        logger.warning("[tools] MCP 工具加载失败: %s", e)
+    return merged
+
+
 def call_tool(name: str, args: dict) -> dict:
     """
     统一入口：任何工具异常都收敛成 {"ok": False, "error": ...} 回给模型，
     不让一次工具失败打断整轮对话
     """
+    if name.startswith("mcp__"):
+        try:
+            from core import mcp_client
+            return mcp_client.call_tool(name, args or {})
+        except Exception as e:
+            return {"ok": False, "error": f"MCP 工具调用失败：{e}"}
     fn = TOOL_REGISTRY.get(name)
     if not fn:
         return {"ok": False, "error": f"未知工具 {name}"}
@@ -258,7 +277,7 @@ def call_tool(name: str, args: dict) -> dict:
 
 
 def tools_json() -> str:
-    return json.dumps(TOOLS, ensure_ascii=False)
+    return json.dumps(get_tools(), ensure_ascii=False)
 
 
 def health_check() -> bool:

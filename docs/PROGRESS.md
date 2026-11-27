@@ -7,11 +7,13 @@
 
 ## 一、当前结论
 
-**MVP 功能已经齐全，本轮把“能不能真的用”补上了：功能审计 50/50、单测 46 项全过、真实模型任务评测 19/19、11 轮多轮对话 4/4、GUI 冒烟通过、7 模块自检 OK。**
+**MVP 功能已经齐全，本轮把“能不能真的用”补上了：功能审计 50/50、单测 59 项全过、真实模型任务评测 19/19、11 轮多轮对话 4/4、GUI 冒烟通过、9 模块自检（配好 `.env` 时全 OK）。**
 
 记忆检索是这轮的重点：换说法问旧事，第一条就命中的比例从 **70% 提到 100%**；top3 里无关内容的平均条数从 **0.7 降到 0.1**。
 
-需要说清楚的边界：主评测是 10 个问句、24 条合成语料，扩展复核是 15 个问句、39 条语料（两套都满分）；仍不等于真实聊天永远不错。长时间挂机、关机提醒、多用户仍未验证/未实现。
+本轮还补了两块扩展能力：**stdio MCP 客户端**（配置化接外部工具，带读写权限门）和 **TTS 语音播报**（edge-tts 为主、Windows SAPI 兜底）。
+
+需要说清楚的边界：主评测是 10 个问句、24 条合成语料，扩展复核是 15 个问句、39 条语料（两套都满分）；仍不等于真实聊天永远不错。长时间挂机、关机提醒、多用户、远程 MCP、ASR 仍未验证/未实现。
 
 ---
 
@@ -21,7 +23,7 @@
 |---|---|---|---|
 | MVP | M1-M12（14 项） | 🟢 功能就绪，可试用 | 100%（14/14） |
 | 质量加固 Q1 | 测试体系 + 缺陷修复 + 记忆/任务可靠性 | 🟢 本轮完成 | 100% |
-| V1.0 | S1-S7 | ⚪ 未开始 | 0% |
+| V1.0 | S1-S7 | 🟡 部分完成（S1 MCP、S3 TTS） | 29%（2/7） |
 | V2.0 | C1-C4 | ⚪ 未开始 | 0% |
 
 ---
@@ -83,12 +85,33 @@ python scripts\chat_flow.py          # 11 轮连续对话
 - 提醒页没选中就点开关，给提示而不是崩溃。
 - 补发提醒文案不再出现“补发：启动时补发提醒”这种重复前缀。
 
-### 6. 文档
+### 7. MCP 客户端框架
+
+以前接一个外部能力就要改 `core/tools.py` 再重启；现在加服务只改配置：
+
+- `core/mcp_client.py`：自己实现 stdio JSON-RPC 2.0，不依赖第三方 `mcp` 包；负责启动子进程、`initialize` 握手、`tools/list` 分页发现、`tools/call` 调用、超时和 stderr 留存。
+- `MCPManager`：读 `mcp_servers.json`，把每个工具改成 `mcp__<server>__<tool>`，转成 OpenAI function schema，和内置工具合并；单个 server 失败只记录、不影响其他。
+- 权限门：只读工具（`readOnlyHint=true`）直接放行；写入工具要 `MCP_ALLOW_WRITE=1` + server 配置 `allow_write=true` + 每次确认，缺一项就拒绝。
+- `scripts/mcp_demo_server.py`：只用标准库的 demo，提供 `echo` / `now` / `write_note`，用来验证链路。
+- 主入口启动时拉起所有 server，退出时关闭；窗口里写入确认通过信号切回主线程弹框，避免后台线程直接开 Qt 对话框。
+
+真实集成验证：demo 1 个 server、3 个工具；`tools.get_tools()` 暴露内置 8 + MCP 3；`call_tool("mcp__demo__echo")` 返回 `echo: 路由成功`；`write_note` 确认后写入成功。
+
+### 8. 语音播报
+
+- `core/voice.py`：先清洗文本（去代码块、链接、Markdown 符号、emoji，超 240 字按句截断），再合成播放。
+- 合成优先 edge-tts（默认 `zh-CN-YunxiNeural`，语速 -8%），失败退回 Windows SAPI 中文语音，两者都失败只显示文字。
+- 独立 daemon 线程 + 最多 3 条队列，新消息打断上一段；pygame 播放，可被 `stop()` 中断。
+- 窗口输入框旁加“语音”复选框，状态写 `QSettings`；CLI 用 `--voice`；默认关闭，不主动打扰。
+- 真实链路：edge-tts 合成 30,960 字节 mp3，pygame 能解码播放；SAPI 识别到 Huihui 中文音色。
+
+### 9. 文档
 
 - 新增 `docs/TEST_REPORT.md`：测试范围、指标、23 个缺陷的根因与修法、未解决项、复现命令。
 - 本文件重写：完成内容、指标、交接与后续优化。
 - `docs/MEMORY_DESIGN.md` 增加 ADR-009：本轮检索排序、角色过滤、事实方向抽取、主题加权。
-- `README.md` 更新验证命令与结果。
+- `docs/DECISIONS.md` 新增决策 8（MCP）与决策 9（TTS），并把决策 5 标注为“MCP 已接 stdio、HTTP 仍未做”。
+- `README.md` 更新验证命令与结果，补 MCP 配置、语音开关、扩展层说明。
 
 ---
 
@@ -97,7 +120,7 @@ python scripts\chat_flow.py          # 11 轮连续对话
 | 指标 | 上轮 | 本轮 | 说明 |
 |---|---|---|---|
 | 离线功能审计 | 40/50 | **50/50** | 8 张表、任务、提醒、工具、上下文、调度 |
-| 单元测试 | 23 | **46 passed** | 新增 23 项回归，覆盖本轮每个缺陷 |
+| 单元测试 | 23 | **59 passed** | 新增 23 项回归 + MCP 7 项 + 语音 6 项 |
 | 记忆混合 R@1 | 70% | **100%** | 第一条就命中的比例 |
 | 记忆 R@3 | 100% | **100%** | 前三条内命中 |
 | 记忆 MRR | 0.85 | **1.00** | 命中位置越靠前越接近 1 |
@@ -106,7 +129,9 @@ python scripts\chat_flow.py          # 11 轮连续对话
 | 任务评测 | 19/19 | **19/19** | 18 场景，真调模型 |
 | 多轮流程 | 有 2 处失败 | **4/4** | 11 轮连续对话 |
 | GUI 冒烟 | PASS | **PASS** | 建任务→问答→提醒浮层→截图 |
-| 窗口自检 | 7 项 OK | **7 项 OK** | 记忆/任务/调度/工具/数据库/向量/模型 |
+| 窗口自检 | 7 项 OK | **9 项检查** | 记忆/任务/调度/工具/数据库/向量/模型/MCP/语音；缺 `.env` 时仅模型配置 FAIL |
+| MCP 链路 | — | **7/7 PASS** | 握手、发现、只读、写入拒绝/确认、坏命令隔离 |
+| 语音链路 | — | **6/6 PASS** | 清洗/截断/开关/队列/降级；真实 edge 合成 + pygame 解码 |
 
 截图：`logs/gui_flow.png`（完整界面与提醒浮层）、`logs/selftest_window.png`（空库自检窗口）。
 
@@ -123,8 +148,10 @@ python scripts\chat_flow.py          # 11 轮连续对话
 | 密钥 | 智谱 key 只在 `.env`；`config.py` 从环境变量读，仓库里没有明文 |
 | 正式库 | `data/baymax.db`（`data/` 已 gitignore） |
 | 测试库 | `data/audit_*`、`data/memeval_*`、`data/taskeval_*`、`data/chatflow_*`、`data/smoke_*`，可整目录删除，不影响正式数据 |
-| 本轮改动 | `config.py`、`prompts.py`、`core/{memory,tasks,tools,brain,scheduler}.py`、`desktop/main_window.py`；新增/修好 5 个测试脚本（`functional_audit`、`memory_eval`、`task_eval`、`chat_flow`、`eval_memory`）与 `tests/test_regressions.py`；本轮改动已在本地提交（`git log -1` 可见） |
-| 回归入口 | 先跑 `pytest tests -q`（应 46 passed），再跑 `functional_audit.py`（应 50/50） |
+| 本轮改动 | `config.py`、`main.py`、`core/{tools,brain}.py`、`desktop/main_window.py`；新增 `core/mcp_client.py`、`core/voice.py`、`scripts/mcp_demo_server.py`、`tests/{test_mcp,test_voice}.py`、`mcp_servers.example.json`；`requirements.txt` 加 edge-tts/pyttsx3/pygame；本轮改动在公开仓库 `SWI423/Andy-Desk` 的 `main` |
+| 回归入口 | 先跑 `pytest tests -q`（应 59 passed），再跑 `functional_audit.py`（应 50/50） |
+| MCP 配置 | `mcp_servers.json` 不入库（已在 `.gitignore`）；从 `mcp_servers.example.json` 复制后改 `command/args/cwd` |
+| 语音依赖 | `edge-tts` 需联网；离线走 Windows SAPI；`logs/tts/` 是合成缓存，可删 |
 | 模型 | 对话 `glm-4-flash`，向量 `embedding-3`（2048 维）；换模型要重建向量并重标阈值 |
 
 ### 下一步优化（按优先级）
@@ -149,10 +176,12 @@ python scripts\chat_flow.py          # 11 轮连续对话
 10. 关机提醒需要 Windows 计划任务或常驻服务；30 秒精度也取决于这个方案。
 11. 向量缓存约 16MB（1000×2048，含中心化副本），几千条后要分片或落盘。
 
-### 已拍板的两项架构决策（2026-11-26）
+### 已拍板的架构决策（2026-11-26）
 
 - **决策 2（心跳调度）**：保持现状。数据库单表为唯一真相 + 30 秒心跳 + 启动补发；接受“程序关着不响、误差 ≤30 秒”，关机提醒留作 Windows 计划任务的独立增量。
 - **决策 4（直连 SDK）**：保持现状。openai SDK 流式 + 自写工具循环（≤4 轮）+ 时间拦截 + 假报喜核对；出现 5 步以上复杂任务或多模型分工时再评估编排层。
+- **决策 8（MCP）**：外部能力走 stdio MCP 客户端，配置化发现工具；写入双开关 + 逐次确认；远程 HTTP/SSE 暂不做。
+- **决策 9（TTS）**：edge-tts 在线为主，Windows SAPI 兜底；默认关闭，由窗口复选框或 `.env` 开启；ASR 暂不做。
 
 两项均由 Wen 授权 Andy 决定，理由与升级触发条件见 `docs/DECISIONS.md` 对应章节。
 
@@ -173,7 +202,7 @@ python scripts\chat_flow.py          # 11 轮连续对话
 | M7 | 工具层 + 工具循环 | Must | 🟢 已完成 | 2026-11-25 | 8 个工具 schema + 注册表 + 重复调用跳过 |
 | M8 | 调度层（提醒+补发） | Must | 🟢 已完成 | 2026-11-25 | 30s 心跳 + 启动补发 + 错过计数修复 |
 | M9 | 桌面窗口（三线看板） | Must | 🟢 已完成 | 2026-11-25 | `desktop/main_window.py` + `theme.py` |
-| M10 | 全链路验证 | Must | 🟢 已完成 | 2026-11-25 | 46 项单测 + 50 项审计 + 记忆/任务/多轮评测 + GUI/自检 |
+| M10 | 全链路验证 | Must | 🟢 已完成 | 2026-11-25 | 59 项单测 + 50 项审计 + 记忆/任务/多轮评测 + GUI/自检 |
 | M11 | 指令拆解 | Must | 🟢 已完成 | 2026-11-25 | `task_breakdown`，≤6 步，子步骤不继承截止 |
 | M12 | 今日概览 | Must | 🟢 已完成 | 2026-11-25 | `tasks.today_overview` + 状态条 + `overview_today` 工具 |
 
@@ -187,6 +216,8 @@ python scripts\chat_flow.py          # 11 轮连续对话
 | I4 | 动作落地保障 | 意图锁定工具 + 假报喜检测 + 丢历史重试 + 如实兜底 |
 | I5 | 三层测试体系 | 离线审计 / 记忆评测 / 任务与多轮评测 / 回归单测 |
 | I6 | 任务状态语义补全 | 只报进度、未给状态时，待办自动转进行中（`core/tasks.py`） |
+| I7 | MCP 客户端框架 | stdio JSON-RPC、工具发现、`mcp__server__tool` 命名、读写权限门、失败隔离（`core/mcp_client.py`） |
+| I8 | TTS 语音播报 | 文本清洗、edge-tts 合成、SAPI 兜底、异步队列播放、窗口开关（`core/voice.py`） |
 
 ---
 
@@ -194,10 +225,10 @@ python scripts\chat_flow.py          # 11 轮连续对话
 
 | 编号 | 任务名 | 状态 | 备注 |
 |---|---|---|---|
-| S1 | MCP 客户端 | ⚪ 未开始 | 工具 schema 不变，替换实现即可 |
+| S1 | MCP 客户端 | 🟢 已完成（stdio） | `core/mcp_client.py`；远程 HTTP/SSE 未做 |
 | S2 | 对接自建 FastAPI | ⚪ 未开始 | 先走 HTTP 工具路径 |
-| S3 | TTS（AndrewNeural） | ⚪ 未开始 | 参数已确定 |
-| S4 | ASR（可选） | ⚪ 未开始 | |
+| S3 | TTS 语音播报 | 🟢 已完成 | 实际用 edge-tts `zh-CN-YunxiNeural` + SAPI 兜底；默认关闭 |
+| S4 | ASR（可选） | ⚪ 未开始 | 按住说话、唤醒词都未做 |
 | S5 | 健康模块回归 | ⚪ 未开始 | 已保留 `save_health_event` 兼容接口 |
 | S6 | 微信代发提醒 | ⚪ 未开始 | 人工审查，不自动发送 |
 | S7 | 摘要压缩 | ⚪ 未开始 | MVP 不做，避免过早压缩丢事实 |
@@ -208,21 +239,23 @@ python scripts\chat_flow.py          # 11 轮连续对话
 
 ---
 
-## 八、验证记录（2026-11-25）
+## 八、验证记录（2026-11-25 ~ 2026-11-26）
 
 | 检查项 | 命令 | 结果 |
 |---|---|---|
-| 单元测试 | `pytest tests -q` | **46 passed** |
+| 单元测试 | `pytest tests -q` | **59 passed**（MCP 7 + 语音 6） |
 | 离线功能审计 | `scripts/functional_audit.py` | **50/50 PASS** |
 | 记忆评测 | `scripts/memory_eval.py` | 混合 **R@1 100% / R@3 100% / MRR 1.00 / 噪声 0.10** |
 | 记忆扩展复核 | `scripts/eval_memory.py --variant hybrid` | **15 问句 / 39 条语料 hit@1 100%、MRR 1.00** |
 | 任务评测 | `scripts/task_eval.py` | **19/19 PASS** |
 | 多轮流程 | `scripts/chat_flow.py` | **4/4 PASS**（11 轮） |
+| MCP 链路 | `tests/test_mcp.py` + `mcp_demo_server.py` | **7/7 PASS**；demo 3 工具可发现、echo 路由成功、write_note 确认后写入 |
+| 语音链路 | `tests/test_voice.py` + 真实合成 | **6/6 PASS**；edge-tts 合成 30,960 字节 mp3，pygame 解码成功 |
 | GUI 全流程 | `scripts/smoke_gui.py` | **PASS**，`logs/gui_flow.png` |
-| 窗口自检 | `main.py --selftest` | **7 模块 OK**，`logs/selftest_window.png` |
+| 窗口自检 | `main.py --selftest` | **9 项检查**；配好 `.env` 全 OK，缺 key 仅“对话核心”FAIL；截图 `logs/selftest_window.png` |
 | 并发写 | 8 线程建任务 | 0 错误、8 条全在、无重复 |
 
-未覆盖：长时间挂机跨天、真实到点触发、100 次混合读写压测、多用户/多设备。
+未覆盖：长时间挂机跨天、真实到点触发、100 次混合读写压测、多用户/多设备、真实第三方 MCP server 兼容性。
 
 ---
 
@@ -249,3 +282,4 @@ python scripts\chat_flow.py          # 11 轮连续对话
 | 2026-11-25 | MVP 全部功能落地；建立首位用户 Wen；测试 17 项 |
 | 2026-11-25 | 检索升级为 embedding + 关键词混合；测试 23 项 |
 | 2026-11-25 | **质量加固**：三层测试体系 + 23 个缺陷修复 + 记忆 R@1 70%→100% + 假报喜拦截；单测 46 项；新增 `TEST_REPORT.md`、ADR-009 |
+| 2026-11-26 | **扩展能力**：stdio MCP 客户端 + 权限门；TTS 语音播报（edge-tts + SAPI 兜底）；单测 59 项；窗口自检 9 模块；README/DECISIONS/PROGRESS 同步 |
