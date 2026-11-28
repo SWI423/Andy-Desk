@@ -91,7 +91,7 @@ def test_fake_claim_is_caught_and_retried(tmp_db, monkeypatch):
 
     rounds = []
 
-    def fake(messages, on_chunk=None, tool_choice="auto"):
+    def fake(messages, on_chunk=None, tool_choice="auto", **kwargs):
         rounds.append(tool_choice)
         if len(rounds) == 1:
             return "好的，每天早上8:30叫你起床", []
@@ -112,7 +112,7 @@ def test_fake_claim_is_caught_and_retried(tmp_db, monkeypatch):
 def test_fake_claim_without_tool_is_not_believed(tmp_db, monkeypatch):
     from core import brain
     monkeypatch.setattr(brain, "_stream_once",
-                        lambda messages, on_chunk=None, tool_choice="auto":
+                        lambda messages, on_chunk=None, tool_choice="auto", **kwargs:
                         ("已记下你的偏好", []))
     r = brain.ask_baymax("记住我下周去北京出差")
     assert "没写进系统" in r["reply"] or "再说一次" in r["reply"]

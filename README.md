@@ -26,7 +26,7 @@ Andy Desk 是一个运行在 Windows 桌面的个人事务管理助手：左边�
 | 记长期事实 | “以后十点后别提醒我学习” | `memory_save` → `semantic_facts` |
 | 换说法找往事 | “我那个证的事怎么样了” | embedding-3 语义检索 + 关键词 RRF |
 | 接外部工具 | “用 demo 回显一下这句话” | MCP stdio 客户端 + 权限门 |
-| 语音输入 | 点输入框旁“🎤 语音输入”，说完再点“停止录音” | Vosk 离线识别 + sounddevice 麦克风采集 |
+| 语音输入 | 点输入框旁“语音输入”，说完再点“停止录音” | Vosk 离线识别 + sounddevice 麦克风采集 |
 | 语音播报 | 打开输入框旁“朗读”开关；在“语言/音色”里分开选回复语种和朗读音色 | 回复完整后整段合成一次；edge-tts 六音色 / SAPI 兜底 |
 | 手动管理 | 左侧看板新建 / 开始 / 完成 / 编辑 / 删除 | PyQt6 |
 
@@ -110,7 +110,7 @@ Expand-Archive models\vosk-model-small-cn-0.22.zip -DestinationPath models
 ```
 
 2. 确认目录是 `models\vosk-model-small-cn-0.22\am`，不是多套一层。
-3. 启动后点输入框旁的“🎤 语音输入”，首次会加载模型；再点一次“停止录音”，文字会填进输入框。
+3. 启动后点输入框旁的“语音输入”，首次会加载模型；再点一次“停止录音”，文字会填进输入框。
 4. 模型目录可以用 `.env` 的 `ASR_MODEL_DIR` 改成绝对路径；没有模型时按钮会提示，但键盘输入不受影响。
 
 > 当前用轻量中文模型，安静环境下短句识别够用；嘈杂环境或长句准确率会下降。它不把录音上传到云端，模型和识别都在本机完成。
@@ -180,7 +180,7 @@ python scripts/chat_flow.py             # 11 轮连续对话流程（真调模�
 python scripts/backfill_embeddings.py --status   # 查看向量索引状态
 python scripts/mcp_demo_server.py       # demo MCP server（一般由客户端自动拉起，不用手跑）
 
-python -m pytest tests -q               # 91 项单测
+python -m pytest tests -q               # 95 项单测
 python -m pytest tests/test_basic_answers.py -q   # 基本问答校准 16 项
 python -m pytest tests/test_voice.py -q           # 语音与语种解绑 15 项
 python -m pytest tests/test_asr.py -q             # 语音输入纯逻辑 7 项
@@ -218,6 +218,8 @@ Andy-Desk/
 │  ├─ asr.py            离线语音输入（Vosk + sounddevice）
 │  ├─ voice.py          TTS 清洗、edge-tts / SAPI、整段异步播放
 │  ├─ brain.py          流式对话 + 工具循环 + 时间硬拦截
+│  ├─ agent_runtime.py  事件协议 + 轨迹记录
+│  ├─ trajectory.py     JSONL 轨迹读写
 │  └─ rag.py            （预留）
 ├─ desktop/
 │  ├─ main_window.py    三线看板 + 对话 + 提醒 + 语音输入/朗读
@@ -237,8 +239,10 @@ Andy-Desk/
 ## 架构
 
 ```text
-PyQt6 窗口（语音输入 / 朗读）
+PyQt6 窗口 / CLI
    ↓ 用户输入
+AgentRuntime：事件流（text_delta / tool_start / tool_result / approval_request / done / error）
+   ↓                              ↓
 brain：时间拦截 → 上下文组装 → 模型（流式）→ 工具循环
    ↓                              ↓
 memory（事件 / 事实 / 向量检索）   tools：内置 8 个 + MCP 动态工具
@@ -249,6 +253,8 @@ scheduler（30s 心跳 → 到点回调）   MCP server（stdio / JSON-RPC）
    ↓
 voice（edge-tts → SAPI 兜底 → pygame 播放）
 ```
+
+每轮对话写 `logs/trajectory.jsonl`（输入、事件、工具参数/结果摘要、上下文摘要、耗时），可用 `read_trajectory(turn_id)` 回放。
 
 记忆设计见 `docs/MEMORY_DESIGN.md`；关键取舍与升级条件见 `docs/DECISIONS.md`。
 
@@ -350,8 +356,8 @@ MCP 让 Andy 用“插头”的方式接外部能力，而不是每加一个功�
 | 检查 | 方式 | 结果 |
 |---|---|---|
 | 克隆复跑 | 从 GitHub 重新 clone 后 `pytest tests -q` | 上一轮 **84/84 PASS**（提交 `a97b9e4`，2026-11-27）；本轮改动尚未重跑克隆 |
-| 本地全量 | D 盘 `pytest tests -q` | **91/91 PASS**（含 MCP 7 项、语音与语种解绑 15 项、基本问答 16 项、ASR 7 项） |
-| 单测 | `pytest tests -q` | 本地 91 项全部通过 |
+| 本地全量 | D 盘 `pytest tests -q` | **95/95 PASS**（含 MCP 7 项、语音与语种解绑 15 项、基本问答 16 项、ASR 7 项、运行时事件 4 项） |
+| 单测 | `pytest tests -q` | 本地 95 项全部通过 |
 | 离线功能审计 | `scripts/functional_audit.py` | **50/50 PASS** |
 | 记忆检索评测 | `scripts/memory_eval.py` | 混合 **R@1 100% / R@3 100% / MRR 1.00 / 噪声 0.10** |
 | 记忆扩展复核 | `scripts/eval_memory.py --variant hybrid` | 39 条语料 / 15 问句 **hit@1 100%、MRR 1.00** |

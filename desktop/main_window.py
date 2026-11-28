@@ -22,26 +22,34 @@ from PyQt6.QtWidgets import (
 )
 
 from config import APP_NAME, DOMAINS, ensure_dirs
-from core import db, tasks, scheduler, brain, voice, asr
+from core import db, tasks, scheduler, voice, asr
+from core.agent_runtime import AgentRuntime
 
 
 # ============ 后台线程 ============
 
 class ChatWorker(QThread):
-    """一次对话在子线程里跑，流式片段通过信号回主线程"""
-    chunk = pyqtSignal(str)
-    done = pyqtSignal(dict)
+    """一次对话在子线程里跑，Agent 事件通过信号回主线程"""
+    event = pyqtSignal(dict)
 
     def __init__(self, text: str, parent=None):
         super().__init__(parent)
         self.text = text
+        self._stop = threading.Event()
+
+    def stop(self):
+        self._stop.set()
 
     def run(self):
         try:
-            res = brain.ask_baymax(self.text, on_chunk=lambda s: self.chunk.emit(s))
+            AgentRuntime(on_event=self.event.emit).run(
+                self.text, should_stop=self._stop.is_set)
         except Exception as e:
-            res = {"reply": f"出错了：{e}", "tools_called": [], "error": str(e)}
-        self.done.emit(res)
+            self.event.emit({"type": "error", "kind": type(e).__name__,
+                             "message": str(e)})
+            self.event.emit({"type": "done", "reply": "", "tools_called": [],
+                             "tool_results": [], "error": str(e),
+                             "cancelled": False})
 
 
 class ASRWorker(QThread):
@@ -761,6 +769,8 @@ class BaymaxWindow(QMainWindow):
         self._asr_ignore_result = False
         self._asr_partial_text = ""
         self._streamed_chars = 0
+        self._turn_error = ""
+        self._turn_cancelled = False
 
         self._worker = None
         self._build_ui()
@@ -910,6 +920,12 @@ class BaymaxWindow(QMainWindow):
         self.chat = ChatView()
         rv.addWidget(self.chat, 1)
 
+        # 工具进度条：正在查任务 / 正在写入 / 等待确认
+        self.activity = QLabel("")
+        self.activity.setObjectName("activity")
+        self.activity.hide()
+        rv.addWidget(self.activity)
+
         quick = QHBoxLayout()
         quick.setSpacing(6)
         for text, payload in (("今日概览", "今天还有什么要紧的？"),
@@ -929,7 +945,7 @@ class BaymaxWindow(QMainWindow):
         input_row.setSpacing(4)
         self.input = QLineEdit()
         self.input.setObjectName("chatInput")
-        self.input.setPlaceholderText("说说要做的事，例如：明天下午三点提醒我交周报")
+        self.input.setPlaceholderText("说说要做的事，例如：明早八点提醒我")
         self.input.setMinimumHeight(38)
         self.input.returnPressed.connect(self.send)
         self.asr_btn = QPushButton("语音输入")
@@ -948,10 +964,17 @@ class BaymaxWindow(QMainWindow):
         self.send_btn.setObjectName("primary")
         self.send_btn.setFixedWidth(62)
         self.send_btn.clicked.connect(self.send)
+        self.stop_btn = QPushButton("停止")
+        self.stop_btn.setObjectName("ghost")
+        self.stop_btn.setFixedWidth(46)
+        self.stop_btn.setToolTip("中止本轮生成，已经出来的文字会保留")
+        self.stop_btn.clicked.connect(self._stop_generation)
+        self.stop_btn.hide()
         input_row.addWidget(self.input, 1)
         input_row.addWidget(self.asr_btn)
         input_row.addWidget(self.voice_check)
         input_row.addWidget(self.voice_btn)
+        input_row.addWidget(self.stop_btn)
         input_row.addWidget(self.send_btn)
         rv.addWidget(composer)
 
@@ -1066,16 +1089,95 @@ class BaymaxWindow(QMainWindow):
         if voice.speaker.enabled:
             voice.speaker.stop()
         self._streamed_chars = 0
+        self._turn_error = ""
+        self._turn_cancelled = False
         self.input.clear()
         self._append_user(text)
         self.chat.begin_assistant()
         self.send_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
+        self.stop_btn.show()
         self.input.setEnabled(False)
 
         self._worker = ChatWorker(text, self)
-        self._worker.chunk.connect(self._on_chunk)
-        self._worker.done.connect(self._on_done)
+        self._worker.event.connect(self._on_agent_event)
         self._worker.start()
+
+    def _stop_generation(self):
+        if not (self._worker and self._worker.isRunning()):
+            return
+        self._worker.stop()
+        self.stop_btn.setEnabled(False)
+        self._set_activity("正在停止生成…")
+        if voice.speaker.enabled:
+            voice.speaker.stop()
+
+    def _set_activity(self, text: str):
+        if not text:
+            self.activity.hide()
+            return
+        self.activity.setText(text)
+        self.activity.show()
+
+    @staticmethod
+    def _tool_activity(name: str) -> str:
+        if name.startswith("mcp__"):
+            return "正在调用外部工具…"
+        if name in ("task_list", "overview_today"):
+            return "正在查任务…"
+        if name == "reminder_list":
+            return "正在查提醒…"
+        if name in ("task_create", "task_update", "task_breakdown"):
+            return "正在写入任务…"
+        if name == "reminder_create":
+            return "正在写入提醒…"
+        if name == "memory_save":
+            return "正在记住这条信息…"
+        return "正在执行…"
+
+    def _on_agent_event(self, event: dict):
+        kind = event.get("type")
+        if kind == "text_delta":
+            self._on_chunk(event.get("text", ""))
+        elif kind == "tool_start":
+            self._set_activity(self._tool_activity(event.get("name", "")))
+        elif kind == "approval_request":
+            name = event.get("name", "")
+            self._set_activity("等待你确认外部写入…")
+            self.chat.add_notice(f"需要确认：{name}")
+        elif kind == "tool_result":
+            if event.get("ok") is False:
+                self.chat.add_notice(
+                    f"⚠ {event.get('name', '工具')} 失败：{event.get('error') or '未知原因'}")
+            self._set_activity("正在处理工具结果…")
+        elif kind == "error":
+            self._turn_error = event.get("message") or "未知错误"
+        elif kind == "done":
+            self._finish_turn(event)
+
+    def _finish_turn(self, event: dict):
+        reply = (event.get("reply") or "").strip()
+        error = event.get("error") or self._turn_error
+        cancelled = bool(event.get("cancelled"))
+        self._turn_cancelled = cancelled
+        if reply and not error and not cancelled and not self._streamed_chars:
+            # 硬拦截/直接返回，不经过流式分片
+            self._on_chunk(reply)
+        self.chat.finish_assistant()
+        self._set_activity("")
+        self.stop_btn.hide()
+        self.send_btn.setEnabled(True)
+        self.input.setEnabled(True)
+        self.input.setFocus()
+        if event.get("tools_called"):
+            self._refresh_all()
+        if error:
+            self.chat.add_notice(f"⚠ {str(error)[:200]}")
+        elif cancelled:
+            self.chat.add_notice("已停止生成。")
+        if reply and not error and not cancelled and voice.speaker.enabled:
+            # 整段回复合成一次，避免流式逐句拼接造成的断续和重复起播
+            voice.speaker.speak(reply)
 
     def _on_chunk(self, text: str):
         if not text:
@@ -1158,7 +1260,7 @@ class BaymaxWindow(QMainWindow):
         self._asr_worker = None
         self.asr_btn.setText("语音输入")
         self.asr_btn.setEnabled(True)
-        self.input.setPlaceholderText("说说要做的事，例如：明天下午三点提醒我交周报")
+        self.input.setPlaceholderText("说说要做的事，例如：明早八点提醒我")
 
     # ---- 语音 ----
     def _choose_voice(self):
@@ -1208,21 +1310,8 @@ class BaymaxWindow(QMainWindow):
         ) == QMessageBox.StandardButton.Yes
 
     def _on_done(self, res: dict):
-        self.send_btn.setEnabled(True)
-        self.input.setEnabled(True)
-        self.input.setFocus()
-        if res.get("tools_called"):
-            self._refresh_all()
-        reply = (res.get("reply") or "").strip()
-        if reply and not res.get("error") and not self._streamed_chars:
-            # 日期/星期/时间等硬拦截直接返回，不经过流式分片
-            self._on_chunk(reply)
-        self.chat.finish_assistant()
-        if res.get("error"):
-            self.chat.add_notice(f"⚠ {res['error'][:200]}")
-        if reply and not res.get("error") and voice.speaker.enabled:
-            # 整段回复合成一次，避免流式逐句拼接造成的断续和重复起播
-            voice.speaker.speak(reply)
+        """兼容旧调用：统一走 done 事件收尾。"""
+        self._finish_turn(res)
 
     # ---- 提醒回调（调度器线程 -> Qt 主线程）----
     def _on_reminder(self, payload: dict):

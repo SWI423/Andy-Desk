@@ -31,6 +31,10 @@ QLabel#badge {
     background: #e6f5ec; color: #2f7d62; border: 1px solid #d5ebdf;
     border-radius: 10px; padding: 4px 10px; font-size: 12px;
 }
+QLabel#activity {
+    background: #f2faf5; color: #3f6b57; border: 1px solid #dcefe4;
+    border-radius: 8px; padding: 5px 10px; font-size: 12px;
+}
 QLabel#bubbleName { color: #2f7d62; font-weight: 700; font-size: 12px; }
 
 QFrame#userBubble {

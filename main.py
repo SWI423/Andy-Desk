@@ -51,13 +51,40 @@ def _cli_confirm_mcp(server: str, tool: str, args: dict) -> bool:
 
 
 def run_cli(voice_on: bool = False):
-    from core import brain, tasks, voice
+    from core import tasks, voice
+    from core.agent_runtime import AgentRuntime
     from core.profile import get_user_name
     name = get_user_name()
     if voice_on:
         voice.speaker.set_enabled(True)
     print(f"Andy CLI{' · ' + name if name else ''}。输入 exit 退出。")
     print(tasks.overview_text())
+
+    streamed = {"chars": 0}
+
+    def on_event(event):
+        kind = event.get("type")
+        if kind == "text_delta":
+            text = event.get("text", "")
+            streamed["chars"] += len(text)
+            print(text, end="", flush=True)
+        elif kind == "tool_start":
+            print(f"\n[工具] {event.get('name', '')} …", end="", flush=True)
+        elif kind == "tool_result":
+            mark = "OK" if event.get("ok", True) else "失败"
+            print(f" -> {mark}", flush=True)
+        elif kind == "approval_request":
+            print(f"\n[等待确认] {event.get('server', '')} / {event.get('name', '')}", flush=True)
+        elif kind == "done":
+            reply = (event.get("reply") or "").strip()
+            if reply and not streamed["chars"] and not event.get("error"):
+                print(reply, flush=True)
+            if event.get("cancelled"):
+                print("\n[已停止生成]", flush=True)
+        elif kind == "error":
+            print(f"\n[错误] {event.get('message', '')}", flush=True)
+
+    runtime = AgentRuntime(on_event=on_event)
     while True:
         try:
             text = input("\n你 > ").strip()
@@ -69,11 +96,13 @@ def run_cli(voice_on: bool = False):
             continue
         if voice_on:
             voice.speaker.stop()
-        res = brain.ask_baymax(text, on_chunk=lambda s: print(s, end="", flush=True))
+        res = runtime.run(text)
         print()
-        if res.get("tools_called"):
-            print(f"[工具] {', '.join(res['tools_called'])}")
-        if voice_on and not res.get("error"):
+        if res.get("turn_id"):
+            print(f"[轨迹] turn_id={res['turn_id']} "
+                  f"{res.get('duration_ms', 0)}ms "
+                  f"（logs/trajectory.jsonl）")
+        if voice_on and not res.get("error") and not res.get("cancelled"):
             voice.speaker.speak(res.get("reply", ""))
 
 

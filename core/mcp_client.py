@@ -454,6 +454,10 @@ class MCPManager:
             logger.error("[mcp] 调用失败 %s/%s: %s", adapter["server"], adapter["tool"], e)
             return {"ok": False, "error": f"MCP 调用失败：{e}"}
 
+    def is_write_tool(self, fn_name: str) -> bool:
+        adapter = self._by_name.get(fn_name)
+        return bool(adapter and not adapter["read_only"])
+
     def status(self) -> dict:
         return {
             "enabled": self.enabled,
@@ -507,6 +511,10 @@ def call_tool(fn_name: str, arguments: dict) -> dict:
 
 def set_confirm_callback(fn):
     get_manager().set_confirm_callback(fn)
+
+
+def is_write_tool(fn_name: str) -> bool:
+    return get_manager().is_write_tool(fn_name)
 
 
 def health_check() -> bool:

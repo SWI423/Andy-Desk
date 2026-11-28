@@ -22,6 +22,31 @@ MONTH_EN = ["January", "February", "March", "April", "May", "June",
 _CLIENT = None
 
 
+class TurnCancelled(Exception):
+    """用户点了停止：保留已经流出的文字，不再继续模型/工具循环。"""
+
+
+def _emit(on_event, event_type: str, **payload):
+    if not on_event:
+        return
+    try:
+        on_event({"type": event_type, **payload})
+    except Exception as e:
+        logger.warning("[brain] 事件发送失败: %s", e)
+
+
+def _tool_summary(result: dict) -> str:
+    if not isinstance(result, dict):
+        return str(result)[:120]
+    if result.get("error"):
+        return str(result["error"])[:160]
+    for key in ("message", "reply", "text", "note"):
+        if result.get(key):
+            return str(result[key])[:160]
+    return "完成" if result.get("ok", True) is not False else "失败"
+
+
+
 def _client() -> OpenAI:
     global _CLIENT
     if _CLIENT is None:
@@ -265,12 +290,15 @@ def _has_write_success(results: list) -> bool:
 
 # ---------- 模型调用 ----------
 
-def _stream_once(messages: list, on_chunk=None, tool_choice="auto"):
+def _stream_once(messages: list, on_chunk=None, tool_choice="auto",
+                 on_event=None, emit_delta=True, should_stop=None):
     """
     一次流式调用
     返回 (文本, 工具调用列表[{id,name,arguments}])
     tool_choice="required" 用于动作意图明确的场景，避免模型只说不做
     """
+    if should_stop and should_stop():
+        raise TurnCancelled()
     stream = _client().chat.completions.create(
         model=ZHIPU_CHAT_MODEL,
         messages=messages,
@@ -281,6 +309,12 @@ def _stream_once(messages: list, on_chunk=None, tool_choice="auto"):
     )
     content_parts, calls = [], {}
     for chunk in stream:
+        if should_stop and should_stop():
+            try:
+                stream.close()
+            except Exception:
+                pass
+            raise TurnCancelled()
         if not chunk.choices:
             continue
         delta = chunk.choices[0].delta
@@ -293,6 +327,8 @@ def _stream_once(messages: list, on_chunk=None, tool_choice="auto"):
                     on_chunk(delta.content)
                 except Exception:
                     pass
+            if emit_delta:
+                _emit(on_event, "text_delta", text=delta.content)
         for tc in (getattr(delta, "tool_calls", None) or []):
             entry = calls.setdefault(tc.index, {"id": "", "name": "", "arguments": ""})
             if tc.id:
@@ -331,30 +367,46 @@ def _parse_args(raw: str) -> dict:
 
 # ---------- 主入口 ----------
 
-def ask_baymax(user_input: str, on_chunk=None, session_id: str = SESSION_ID) -> dict:
+def ask_baymax(user_input: str, on_chunk=None, session_id: str = SESSION_ID,
+               on_event=None, should_stop=None) -> dict:
     """
     Andy对话主入口
-    返回 {"reply", "tools_called", "tool_results", "context_meta", "error"}
+    返回 {"reply", "tools_called", "tool_results", "context_meta", "error", "cancelled"}
+    on_event 接收 text_delta/tool_start/tool_result/approval_request/done/error；
+    桌面和 CLI 只消费事件，不再各自解析返回值。
     """
     text = (user_input or "").strip()
+    ctx = {"text": "", "stats": {}}
     if not text:
-        return {"reply": "我在，想让我帮你安排点什么？", "tools_called": [], "error": None}
+        reply = "我在，想让我帮你安排点什么？"
+        _emit(on_event, "done", reply=reply, tools_called=[], tool_results=[],
+              context_meta={}, context_preview="", error=None, cancelled=False)
+        return {"reply": reply, "tools_called": [], "error": None,
+                "cancelled": False}
 
     # 1. 时间硬拦截（省一次模型调用，也避免模型瞎猜时间）
     if needs_time_clarify(text):
         reply = "几点提醒你？给我一个具体时间，比如「明早 8 点」或「11月28日 19:00」。"
         memory.log_event("user", text)
         memory.log_event("assistant", reply)
+        _emit(on_event, "done", reply=reply, tools_called=[], tool_results=[],
+              context_meta={"intercepted": True}, context_preview="",
+              error=None, cancelled=False)
         return {"reply": reply, "tools_called": [],
-                "context_meta": {"intercepted": True}, "error": None}
+                "context_meta": {"intercepted": True}, "error": None,
+                "cancelled": False}
 
     # 1.1 基本问答硬拦截：日期/星期/几点直接查本机时钟，模型经常答错
     basic = answer_basic_query(text)
     if basic:
         memory.log_event("user", text)
         memory.log_event("assistant", basic)
+        _emit(on_event, "done", reply=basic, tools_called=[], tool_results=[],
+              context_meta={"intercepted": "basic_time"}, context_preview="",
+              error=None, cancelled=False)
         return {"reply": basic, "tools_called": [],
-                "context_meta": {"intercepted": "basic_time"}, "error": None}
+                "context_meta": {"intercepted": "basic_time"}, "error": None,
+                "cancelled": False}
 
     # 2. 先取历史（避免把本轮输入重复注入），再落用户事件 + 规则抽事实
     history = memory.recent_events(limit=HISTORY_LIMIT * 2, session_id=session_id)
@@ -397,6 +449,7 @@ def ask_baymax(user_input: str, on_chunk=None, session_id: str = SESSION_ID) -> 
 
     # 4. 工具循环
     called, results, reply, err = [], [], "", None
+    cancelled = False
     executed = {}                 # 同一轮里重复调用同工具同参数，直接复用结果
     force_name = force_tool_for(text)
     write_intent = force_name is not None
@@ -419,6 +472,17 @@ def ask_baymax(user_input: str, on_chunk=None, session_id: str = SESSION_ID) -> 
                 continue
             args = _parse_args(c["arguments"])
             sig = (name, json.dumps(args, ensure_ascii=False, sort_keys=True))
+            _emit(on_event, "tool_start", name=name, args=args)
+            if name.startswith("mcp__"):
+                try:
+                    from core import mcp_client
+                    needs_approval = mcp_client.is_write_tool(name)
+                except Exception:
+                    needs_approval = False
+                if needs_approval:
+                    parts = name.split("__", 2)
+                    _emit(on_event, "approval_request", name=name, args=args,
+                          server=parts[1] if len(parts) > 1 else "")
             if sig in executed:
                 # 模型陷入"再调一次"的循环：不重复执行写操作，把上次结果回给它
                 dup += 1
@@ -429,6 +493,8 @@ def ask_baymax(user_input: str, on_chunk=None, session_id: str = SESSION_ID) -> 
                     "content": json.dumps(result, ensure_ascii=False),
                 })
                 logger.info("[tool] %s 重复调用已跳过", name)
+                _emit(on_event, "tool_result", name=name, ok=True,
+                      summary="重复调用，已跳过", error="")
                 continue
             result = tools.call_tool(name, args)
             if result.get("ok", True) is not False:
@@ -436,6 +502,9 @@ def ask_baymax(user_input: str, on_chunk=None, session_id: str = SESSION_ID) -> 
             called.append(name)
             results.append({"name": name, "args": args, "result": result})
             logger.info("[tool] %s %s -> %s", name, args, result.get("ok"))
+            _emit(on_event, "tool_result", name=name,
+                  ok=result.get("ok", True) is not False,
+                  summary=_tool_summary(result), error=result.get("error", ""))
             messages.append({
                 "role": "tool",
                 "tool_call_id": c["id"] or f"call_{idx}",
@@ -446,7 +515,10 @@ def ask_baymax(user_input: str, on_chunk=None, session_id: str = SESSION_ID) -> 
     try:
         for rnd in range(MAX_TOOL_ROUNDS):
             choice = first_choice() if rnd == 0 else "auto"
-            content, calls = _stream_once(messages, on_chunk=stream_cb, tool_choice=choice)
+            content, calls = _stream_once(
+                messages, on_chunk=stream_cb, tool_choice=choice,
+                on_event=on_event, emit_delta=not write_intent,
+                should_stop=should_stop)
             logger.info("[brain] round=%s choice=%s calls=%s content_len=%s",
                         rnd, choice, [c["name"] for c in calls], len(content or ""))
             if not calls:
@@ -480,7 +552,8 @@ def ask_baymax(user_input: str, on_chunk=None, session_id: str = SESSION_ID) -> 
             }] + retry_tail
             for i in range(2):
                 content, calls = _stream_once(
-                    messages, on_chunk=None,
+                    messages, on_chunk=None, on_event=on_event,
+                    emit_delta=False, should_stop=should_stop,
                     tool_choice=(first_choice() if i == 0 else "auto")
                     if force_name else "required")
                 if not calls:
@@ -494,21 +567,42 @@ def ask_baymax(user_input: str, on_chunk=None, session_id: str = SESSION_ID) -> 
                 reply = ("抱歉，刚才那条我只是嘴上说办好了，实际没写进系统。"
                          "你再说一次，我马上用工具真正办。")
 
+    except TurnCancelled:
+        cancelled = True
+        logger.info("[brain] 用户停止本轮生成")
     except Exception as e:
         logger.error("[brain] 模型调用失败: %s", e)
         err = str(e)
+        _emit(on_event, "error", kind=type(e).__name__, message=str(e))
         reply = f"我这边连模型出了点问题（{type(e).__name__}）。本地任务和提醒功能还能用，稍后再试一次对话。"
+
+    if cancelled:
+        result = {
+            "reply": "",
+            "tools_called": called,
+            "tool_results": results,
+            "context_meta": ctx["stats"],
+            "context_preview": ctx["text"][:300],
+            "error": None,
+            "cancelled": True,
+        }
+        _emit(on_event, "done", **result)
+        return result
 
     reply = (reply or "").strip() or "嗯，我在。"
     reply = calibrate_reply_time(reply)
     memory.log_event("assistant", reply)
-    return {
+    result = {
         "reply": reply,
         "tools_called": called,
         "tool_results": results,
         "context_meta": ctx["stats"],
+        "context_preview": ctx["text"][:300],
         "error": err,
+        "cancelled": False,
     }
+    _emit(on_event, "done", **result)
+    return result
 
 
 # 兼容旧名字

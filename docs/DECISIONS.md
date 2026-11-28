@@ -450,15 +450,15 @@ embedding-3 的中文向量有一个很强的公共方向，任意两句话直�
    - 回到第 5 步，最多 `MAX_TOOL_ROUNDS = 4` 轮。
 7.1 **假报喜拦截**：本轮明确要求写入（建任务/更新/记事实/设提醒），回复却出现“已设置/已记下/我会每天叫你”这类说法，而本轮没有任何成功的写工具 → 丢掉多轮历史、只带当前这句重试；提醒意图锁了工具却零调用也直接重试。重试仍不调工具，就如实说“没写进系统”，不再骗用户。
 8. **落库**：用户这句话、最终回答各写一条 `chat_events`。
-9. **返回**：`{"reply","tools_called","tool_results","context_meta","error"}`。
+9. **返回并广播事件**：`{"reply","tools_called","tool_results","context_meta","context_preview","error","cancelled"}`；若传了 `on_event`，同时发出 `text_delta/tool_start/tool_result/approval_request/done/error`。桌面与 CLI 只消费事件，不各自解析返回值。
 
 ### 关键函数
 
 | 函数 | 归属 | 参数 | 返回 | 用错后果 |
 |---|---|---|---|---|
-| `ask_baymax(user_input, on_chunk=None, session_id="default")` | `core/brain.py` | 用户输入、流式回调、会话 id | 上述 dict | `on_chunk` 里做耗时操作 → 卡住整个流；`session_id` 乱传 → 历史分裂 |
+| `ask_baymax(user_input, on_chunk=None, session_id="default", on_event=None, should_stop=None)` | `core/brain.py` | 用户输入、旧流式回调、会话 id、事件回调、停止判断 | 上述 dict | `on_event` 里做耗时操作 → 卡住流；`should_stop` 永远返回 True → 每轮都取消；`session_id` 乱传 → 历史分裂 |
 | `needs_time_clarify(text)` | 同上 | 一句话 | `bool` | 关键词表加太宽（比如把"记得"也加进去）→ 正常对话被拦截反问 |
-| `_stream_once(messages, on_chunk=None, tool_choice="auto")` | 同上（内部） | 完整消息列表、回调、工具选择策略（`auto`/`required`/指定函数） | `(文本, [{"id","name","arguments"}])` | 不加 `tools` 参数 → 模型永远不会调工具，只会嘴上说；把 `tool_choice` 当绝对保证 → 服务端可能不执行，仍要靠“假报喜拦截”兜底 |
+| `_stream_once(messages, on_chunk=None, tool_choice="auto", on_event=None, emit_delta=True, should_stop=None)` | 同上（内部） | 完整消息列表、回调、工具选择策略、事件回调、是否发文字增量、停止判断 | `(文本, [{"id","name","arguments"}])` | 不加 `tools` 参数 → 模型永远不会调工具，只会嘴上说；把 `tool_choice` 当绝对保证 → 服务端可能不执行，仍要靠“假报喜拦截”兜底 |
 | `tools.call_tool(name, args)` | `core/tools.py` | 工具名、参数字典 | 统一 dict；失败也是 dict | 直接 `raise` → 一次工具失败打断整轮；不校验名字 → 未知工具 |
 | `tasks.find_by_title(title, limit=5)` | `core/tasks.py` | 标题关键词 | 未完成任务的列表 | 匹配阈值太低 → 改错任务；当前有"精确 → 包含 → 相似度 0.45"三级，宁可返回多个让你确认，也不静默改错 |
 
@@ -889,6 +889,8 @@ Andy 在窗口里回答“现在是 2026年11月27日 星期日 14:02”：日�
 | 语音清洗、合成、播放 | `core/voice.py` | `clean_tts_text` / `Speaker` / `health_check` |
 | 离线语音识别 | `core/asr.py` | `model_available` / `load_model` / `record_until` / `recognize_wav` / `normalize_text` / `status` |
 | 对话、工具循环、时间拦截 | `core/brain.py` | `ask_baymax` / `_stream_once` / `needs_time_clarify` |
+| 事件协议、一次对话的运行时 | `core/agent_runtime.py` | `AgentRuntime.run` / `new_turn_id` |
+| JSONL 轨迹读写 | `core/trajectory.py` | `TrajectoryWriter` / `read_trajectory` / `last_turn_id` |
 | 首位用户建档 | `core/profile.py` | `ensure_first_user` / `get_user_name` |
 | 窗口、看板、提醒浮层 | `desktop/main_window.py` | `BaymaxWindow` / `TaskPage` / `ReminderPage` |
 | 人设、示例 | `prompts.py` | `SYSTEM_PROMPT` / `build_system_prompt` |
@@ -907,7 +909,7 @@ Andy 在窗口里回答“现在是 2026年11月27日 星期日 14:02”：日�
 | 提醒规则算得对不对 | `python -m core.scheduler` | 打印 once/daily/weekly 的 `compute_next` 结果 |
 | 工具是否真的执行 | `python scripts/check_multi_tool.py` | 日志出现 `[tool] task_update ... -> True`；脚本每次跑用独立测试库，不污染正式数据 |
 | 建档内容 | `python scripts/init_user.py --show` | 显示 Wen / 2026-11-25 / Andy |
-| 单元测试 | `python -m pytest tests -q` | 91 passed（含 MCP 7、语音与语种解绑 15、基本问答 16、ASR 7） |
+| 单元测试 | `python -m pytest tests -q` | 95 passed（含 MCP 7、语音与语种解绑 15、基本问答 16、ASR 7、运行时事件 4） |
 | 基本问答校准 | `python -m pytest tests/test_basic_answers.py -q` | 16 passed：星期/日期/几点本地回答，任务句不拦截，错误时间纠正，条件句不误改 |
 | MCP 协议与权限 | `python -m pytest tests/test_mcp.py -q` | 7 passed：握手、发现、只读、写入拒绝/确认、坏命令隔离 |
 | MCP 真实配置 | 复制 `mcp_servers.example.json` 为 `mcp_servers.json`，启动 `python main.py --selftest` | 日志出现“MCP：1 个 server，3 个工具” |

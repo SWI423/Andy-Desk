@@ -7,7 +7,7 @@
 
 ## 一、当前结论
 
-**MVP 功能已经齐全，本轮把“能不能真的用”补上了：功能审计 50/50、单测 91 项全过、真实模型任务评测 19/19、11 轮多轮对话 4/4、GUI 冒烟通过、11 项自检（配好 `.env` 与 ASR 模型时全 OK）。**
+**MVP 功能已经齐全，本轮把“能不能真的用”补上了：功能审计 50/50、单测 95 项全过、真实模型任务评测 19/19、11 轮多轮对话 4/4、GUI 冒烟通过、11 项自检（配好 `.env` 与 ASR 模型时全 OK）。**
 
 记忆检索是这轮的重点：换说法问旧事，第一条就命中的比例从 **70% 提到 100%**；top3 里无关内容的平均条数从 **0.7 降到 0.1**。
 
@@ -97,7 +97,19 @@ python scripts\chat_flow.py          # 11 轮连续对话
 - `desktop/theme.py` 整体换成浅绿主题：背景 `#edf6f0`、白卡 16px 圆角、主色 `#2f7d62`、用户气泡 `#e7f5ed`、Andy 气泡白底 + `#62b394` 左边线。
 - `scripts/smoke_gui.py` 改用 `ChatView.plain_text()` 读取聊天快照，不再调用旧 `QTextBrowser.toPlainText()`。
 
-验证：`python main.py --selftest` 11 项健康检查全 OK；`python scripts/smoke_gui.py` PASS（建任务 → 对话 → 工具结果 → 提醒 → 截图）；`pytest tests -q` 91 passed。README 两张截图已换成新版布局。
+验证：`python main.py --selftest` 11 项健康检查全 OK；`python scripts/smoke_gui.py` PASS（建任务 → 对话 → 工具结果 → 提醒 → 截图，并断言没有残留“正在思考”）；`pytest tests -q` 95 passed。README 两张截图已换成新版布局。
+
+### 5.2 Phase 0 运行时骨架（2026-11-28）
+
+先把 UI 和 Agent 循环拆开，后面加记忆、知识、浏览器不用两边同时改：
+
+- `core/agent_runtime.py`：定义 `text_delta / tool_start / tool_result / approval_request / done / error` 六类事件；桌面 `ChatWorker` 与 CLI 都只消费事件，不再各自调 `brain.ask_baymax`。
+- `core/brain.py`：新增可选 `on_event` 与 `should_stop`；流式片段转 `text_delta`，工具执行前后转 `tool_start/tool_result`，MCP 写入前转 `approval_request`；用户停止抛 `TurnCancelled`，保留已流出的文字，`done` 标 `cancelled`。
+- `core/trajectory.py`：每轮写 `logs/trajectory.jsonl`，含输入、事件、工具参数/结果摘要、上下文摘要、耗时；`read_trajectory(turn_id)` 可回放一轮。
+- 桌面：`ChatWorker` 改成事件线程；右侧新增工具进度条（正在查任务/正在写入/等待确认），输入区新增“停止”按钮；`done` 统一补写硬拦截/工具结果/流式结尾，空占位气泡会被移除。
+- CLI：新增事件打印（工具开始/结果、等待确认、错误、`turn_id` 与耗时），硬拦截的 `done.reply` 也会打印。
+
+验证：`pytest tests -q` 95 passed（新增 `test_agent_runtime.py` 4 项）；`main.py --selftest` 11 项 OK；`smoke_gui.py` PASS（并断言没有残留“正在思考”）；真实提醒链路事件顺序为 `turn_start → tool_start → tool_result → done → turn_end`，轨迹 5 条；`main.py --cli` 输入“现在几点”能直接打印本地时间并给出 `turn_id`；窗口级停止实测：生成 1.8 秒后点“停止”，`done.cancelled=true`、没有空白气泡、停止按钮自动隐藏。
 
 ### 7. MCP 客户端框架
 
@@ -144,7 +156,7 @@ python scripts\chat_flow.py          # 11 轮连续对话
 | 指标 | 上轮 | 本轮 | 说明 |
 |---|---|---|---|
 | 离线功能审计 | 40/50 | **50/50** | 8 张表、任务、提醒、工具、上下文、调度 |
-| 单元测试 | 23 | **91 passed** | 新增 23 项回归 + MCP 7 项 + 语音与语种解绑 15 项 + 基本问答 16 项 + ASR 7 项 |
+| 单元测试 | 23 | **95 passed** | 新增 23 项回归 + MCP 7 项 + 语音与语种解绑 15 项 + 基本问答 16 项 + ASR 7 项 + 运行时事件 4 项 |
 | 记忆混合 R@1 | 70% | **100%** | 第一条就命中的比例 |
 | 记忆 R@3 | 100% | **100%** | 前三条内命中 |
 | 记忆 MRR | 0.85 | **1.00** | 命中位置越靠前越接近 1 |
@@ -174,8 +186,8 @@ python scripts\chat_flow.py          # 11 轮连续对话
 | 密钥 | 智谱 key 只在 `.env`；`config.py` 从环境变量读，仓库里没有明文 |
 | 正式库 | `data/baymax.db`（`data/` 已 gitignore） |
 | 测试库 | `data/audit_*`、`data/memeval_*`、`data/taskeval_*`、`data/chatflow_*`、`data/smoke_*`，可整目录删除，不影响正式数据 |
-| 本轮改动 | `config.py`、`main.py`、`core/{tools,brain,voice}.py`、`desktop/main_window.py`；新增 `core/asr.py`、`core/mcp_client.py`、`scripts/mcp_demo_server.py`、`docs/DEVELOPMENT_PLAN.md`、`tests/{test_mcp,test_voice,test_asr}.py`、`mcp_servers.example.json`；`requirements.txt` 加 vosk/sounddevice/edge-tts/pyttsx3/pygame；本轮改动在公开仓库 `SWI423/Andy-Desk` 的 `main` |
-| 回归入口 | 先跑 `pytest tests -q`（应 91 passed），再跑 `functional_audit.py`（应 50/50） |
+| 本轮改动 | `config.py`、`main.py`、`core/{tools,brain,voice}.py`、`desktop/{main_window,theme}.py`；新增 `core/{asr,mcp_client,agent_runtime,trajectory}.py`、`scripts/mcp_demo_server.py`、`docs/DEVELOPMENT_PLAN.md`、`tests/{test_mcp,test_voice,test_asr,test_agent_runtime}.py`、`mcp_servers.example.json`；`requirements.txt` 加 vosk/sounddevice/edge-tts/pyttsx3/pygame；本轮改动在公开仓库 `SWI423/Andy-Desk` 的 `main` |
+| 回归入口 | 先跑 `pytest tests -q`（应 95 passed），再跑 `functional_audit.py`（应 50/50） |
 | MCP 配置 | `mcp_servers.json` 不入库（已在 `.gitignore`）；从 `mcp_servers.example.json` 复制后改 `command/args/cwd` |
 | 语音依赖 | `edge-tts` 需联网；离线走 Windows SAPI；`logs/tts/` 是合成缓存，可删 |
 | ASR 模型 | `models/vosk-model-small-cn-0.22`（约 42MB，`models/` 已 gitignore）；缺失时语音按钮提示，不影响键盘输入 |
@@ -230,7 +242,7 @@ python scripts\chat_flow.py          # 11 轮连续对话
 | M7 | 工具层 + 工具循环 | Must | 🟢 已完成 | 2026-11-25 | 8 个工具 schema + 注册表 + 重复调用跳过 |
 | M8 | 调度层（提醒+补发） | Must | 🟢 已完成 | 2026-11-25 | 30s 心跳 + 启动补发 + 错过计数修复 |
 | M9 | 桌面窗口（三线看板） | Must | 🟢 已完成 | 2026-11-25 | `desktop/main_window.py` + `theme.py` |
-| M10 | 全链路验证 | Must | 🟢 已完成 | 2026-11-28 | 91 项单测 + 50 项审计 + 记忆/任务/多轮评测 + GUI/自检 + ASR 真实模型 |
+| M10 | 全链路验证 | Must | 🟢 已完成 | 2026-11-28 | 95 项单测 + 50 项审计 + 记忆/任务/多轮评测 + GUI/自检 + ASR 真实模型 + 窗口停止实测 |
 | M11 | 指令拆解 | Must | 🟢 已完成 | 2026-11-25 | `task_breakdown`，≤6 步，子步骤不继承截止 |
 | M12 | 今日概览 | Must | 🟢 已完成 | 2026-11-25 | `tasks.today_overview` + 状态条 + `overview_today` 工具 |
 
@@ -271,7 +283,7 @@ python scripts\chat_flow.py          # 11 轮连续对话
 
 | 检查项 | 命令 | 结果 |
 |---|---|---|
-| 单元测试 | `pytest tests -q` | **91 passed**（MCP 7 + 语音与语种解绑 15 + 基本问答 16 + ASR 7） |
+| 单元测试 | `pytest tests -q` | **95 passed**（MCP 7 + 语音与语种解绑 15 + 基本问答 16 + ASR 7 + 运行时事件 4） |
 | 离线功能审计 | `scripts/functional_audit.py` | **50/50 PASS** |
 | 记忆评测 | `scripts/memory_eval.py` | 混合 **R@1 100% / R@3 100% / MRR 1.00 / 噪声 0.10** |
 | 记忆扩展复核 | `scripts/eval_memory.py --variant hybrid` | **15 问句 / 39 条语料 hit@1 100%、MRR 1.00** |
@@ -315,4 +327,5 @@ python scripts\chat_flow.py          # 11 轮连续对话
 | 2026-11-27 | **语种切换初版**：用户选定 6 个 edge-tts 音色；新增 `zh-TW`、`en-GB`、`en-CA`、`en-HK`、`en-US` 固定档位与 `auto/offline`，共八档；每个档位同时决定回复语言和音色；中文提问选英文档也英文回答；桌面“音色”按钮改为“语种”；单测 82 项（语音与语种 13 + 基本问答 16） |
 | 2026-11-27 | **语种/音色解绑**：按用户要求拆开八档绑定，`language_mode` 只管回复语言、`voice_mode` 只管朗读音色，默认 `follow`；旧设置自动迁移；跨语言组合提示但不阻止；桌面改“语言/音色”双下拉；CLI 加 `--voice-mode`；单测 84 项（语音与语种 15 + 基本问答 16） |
 | 2026-11-28 | **空白回复修复**：硬拦截回复不走流式，窗口补写最终 reply，提交 `198eb97` |
-| 2026-11-28 | **语音输入 + 整段 TTS**：新增 `core/asr.py`（Vosk + sounddevice 离线识别）、桌面“🎤 语音输入”按钮、`ASRWorker` 子线程；TTS 去掉流式逐句，改为回复完成后整段合成一次；单测 91 项（ASR 7 + 语音 15 + 基本问答 16） |
+| 2026-11-28 | **语音输入 + 整段 TTS**：新增 `core/asr.py`（Vosk + sounddevice 离线识别）、桌面“语音输入”按钮、`ASRWorker` 子线程；TTS 去掉流式逐句，改为回复完成后整段合成一次；单测 91 项（ASR 7 + 语音 15 + 基本问答 16） |
+| 2026-11-28 | **左右分列气泡 + Phase 0 运行时骨架**：桌面改浅绿双卡布局；新增 `core/agent_runtime.py` 六类事件、`core/trajectory.py` JSONL 轨迹、桌面工具进度与停止按钮、CLI 事件消费；单测 95 项（新增运行时事件 4） |

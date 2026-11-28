@@ -39,13 +39,13 @@ def phase1():
     print("[2] 发消息（走模型 + 工具）")
     win.input.setText("今天学习上有什么要做的？")
     win.send()
-    win._worker.done.connect(phase2)
+    win._worker.event.connect(lambda e: phase2(e) if e.get("type") == "done" else None)
 
 
-def phase2(res):
-    state["reply"] = res.get("reply")
-    print("    reply:", res.get("reply"))
-    print("    tools:", res.get("tools_called"), "error:", res.get("error"))
+def phase2(event):
+    state["reply"] = event.get("reply")
+    print("    reply:", event.get("reply"))
+    print("    tools:", event.get("tools_called"), "error:", event.get("error"))
 
     print("[3] 触发提醒")
     r = scheduler.create_reminder("喝水休息一下", "daily", "09:00")
@@ -58,8 +58,9 @@ def phase2(res):
 def phase3():
     win.grab().save(state["shot"])
     print("[4] 截图:", state["shot"])
-    print("    chat tail:", win.chat.plain_text().strip().splitlines()[-2:])
-    ok = bool(state["reply"]) and ("大" or True)
+    chat_text = win.chat.plain_text()
+    print("    chat tail:", chat_text.strip().splitlines()[-2:])
+    ok = bool(state["reply"]) and "正在思考" not in chat_text
     print("RESULT:", "PASS" if ok else "FAIL")
     app.quit()
 
