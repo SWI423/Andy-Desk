@@ -147,12 +147,11 @@ def test_stream_feed_flush_tail():
     assert feed.flush() == ["I am here."]
 
 
-def test_play_edge_splits_and_reports_voice(tmp_path, monkeypatch):
+def test_play_edge_synthesizes_whole_reply_once(tmp_path, monkeypatch):
     played = []
     sp = voice.Speaker(enabled=True)
     _reset()
     monkeypatch.setattr(voice, "TTS_VOICE", "")
-    monkeypatch.setattr(voice, "TTS_CHUNK_CHARS", 14)
 
     def fake_path(chunk, profile):
         return str(tmp_path / (voice._sha1(chunk) + ".mp3"))
@@ -166,7 +165,7 @@ def test_play_edge_splits_and_reports_voice(tmp_path, monkeypatch):
     monkeypatch.setattr(sp, "_play_file", lambda path: played.append(path) or True)
 
     assert sp._play_edge("第一句在这里。第二句稍微长一点！") is True
-    assert len(played) == 2
+    assert len(played) == 1
     assert sp.last_backend == "edge-tts"
     assert sp.last_voice == voice.TTS_VOICE_ZH
     sp.shutdown()

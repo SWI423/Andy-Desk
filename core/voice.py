@@ -419,7 +419,8 @@ class Speaker:
         return False
 
     def _play_edge(self, text: str) -> bool:
-        chunks = split_tts_text(text)
+        # 整段回复一次合成、一个音频文件；不再按句拆成多段起播
+        chunks = [text] if text else []
         if not chunks:
             return False
         profile = pick_profile(text)
@@ -438,16 +439,14 @@ class Speaker:
                     t0 = time.time()
                     _edge_synthesize(chunk, path, profile)
                     if idx == 0:
-                        logger.info("[voice] 首段合成 %.2fs，共 %d 段，音色 %s",
-                                    time.time() - t0, len(chunks),
-                                    profile["voice"])
+                        logger.info("[voice] 整段合成 %.2fs，音色 %s",
+                                    time.time() - t0, profile["voice"])
                 if self._play_file(path):
                     played = True
                     self.last_backend = "edge-tts"
                     self.last_voice = profile["voice"]
             except Exception as e:
-                logger.info("[voice] edge-tts 第 %d 段不可用，后续改 SAPI：%s",
-                            idx + 1, e)
+                logger.info("[voice] edge-tts 不可用，改 SAPI：%s", e)
                 sapi_only = True
                 if self._play_sapi(chunk, profile["lang"]):
                     played = True

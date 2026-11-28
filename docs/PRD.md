@@ -80,8 +80,8 @@
 |---|---|---|---|
 | S1 | **MCP 客户端** | 支持 stdio 与 HTTP/SSE 两种传输，动态加载外部工具 | 能列出远端工具、调用成功、失败可诊断 |
 | S2 | **对接自建 FastAPI 服务** | 把已有 FastAPI 项目的能力接入为Andy的工具 | Andy能读/写该服务的任务数据 |
-| S3 | **语音输出 TTS + 语种/音色分离** | 六套 edge-tts 音色：大陆中文 `zh-CN-YunxiNeural`、台灣中文 `zh-TW-HsiaoChenNeural`、美式 `en-US-BrianMultilingualNeural`、英式 `en-GB-RyanNeural`、加拿大 `en-CA-LiamNeural`、香港 `en-HK-SamNeural`；回复语种七档、朗读音色八档（默认跟随语种），另有离线 SAPI | 流式按句播放；可开关；语种和音色可分开切换；选英文语种后用英文回答；跨语言组合有提示但可保存 |
-| S4 | **语音输入 ASR**（可选） | 按住说 → 转文字 | 常见短句可用；不可用不影响文字流程 |
+| S3 | **语音输出 TTS + 语种/音色分离** | 六套 edge-tts 音色：大陆中文 `zh-CN-YunxiNeural`、台灣中文 `zh-TW-HsiaoChenNeural`、美式 `en-US-BrianMultilingualNeural`、英式 `en-GB-RyanNeural`、加拿大 `en-CA-LiamNeural`、香港 `en-HK-SamNeural`；回复语种七档、朗读音色八档（默认跟随语种），另有离线 SAPI | 回复完整后整段合成一次；可开关；语种和音色可分开切换；选英文语种后用英文回答；跨语言组合有提示但可保存 |
+| S4 | **语音输入 ASR**（可选） | 点击“🎤 语音输入”开始，再点“停止录音”；Vosk 离线识别 → 文字填入输入框，不自动发送 | 常见短句可用；缺模型/麦克风时给提示，不影响文字流程 |
 | S5 | **健康陪伴模块（保留）** | 沿用 V1：健康记录、医疗知识库 RAG、健康趋势、就医提示 | 说不适→记录→检索→建议，闭环可复现 |
 | S6 | **微信代发提醒（人工审查）** | 到点生成内容 → 打开微信 → 粘贴 → 用户手动发送 | 绝不自动发送；粘贴内容可编辑 |
 

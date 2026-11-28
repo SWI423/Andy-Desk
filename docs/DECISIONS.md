@@ -711,8 +711,8 @@ reply: 好的，模电实验报告已经标记为完成了。
 3. 新消息打断上一段：`stop(clear=True)` 停 pygame、清队列；工作线程取到新文本后清中断标记。
 4. `pick_profile()` 定音色：显式 `voice_mode` 对应的音色优先；`follow` 时按当前 `language_mode` 选对应地区音色，`auto` 再按文本中英文判断；`sapi` 不选在线音色。
 4.1 `set_language_mode(mode)` 只改回复语种状态，并同步给模型 `LANGUAGE_INSTRUCTIONS` 约束；它不再改 `TTS_VOICE`、`TTS_RATE`、`TTS_PITCH`。`set_voice_mode(mode)` 只改音色状态与 `TTS_VOICE/TTS_RATE/TTS_PITCH`，`follow` 清空显式音色，`sapi` 设 `speaker.prefer_offline=True`。旧设置档位在 `BaymaxWindow.__init__` 里迁移成这两个键，避免直接覆盖用户配置。
-5. `split_tts_text()` 按中英标点把回复切成约 `TTS_CHUNK_CHARS=80` 字的小段；`StreamFeed` 在模型流式输出时按句推送，第一句完整就送去合成，不等整段回复。
-6. `_play_edge()` 逐段查缓存（`logs/tts/<sha1>.mp3`，key 含 voice/rate/pitch/volume/text），没有就 `edge_tts.Communicate(..., pitch=...)` 合成；失败重试 1 次，再退回 SAPI。
+5. **2026-11-28 调整**：GUI 不再在流式阶段分句朗读；`_on_done()` 拿到完整 `reply` 后只调用一次 `speak(reply)`。`split_tts_text()` / `StreamFeed` 仍保留在模块和测试里，作为旧接口/兼容能力，但窗口不再使用。
+6. `_play_edge()` 对整段文本只生成一个音频文件，再查缓存（`logs/tts/<sha1>.mp3`，key 含 voice/rate/pitch/volume/text），没有就 `edge_tts.Communicate(..., pitch=...)` 合成；失败重试 1 次，再退回 SAPI。
 7. `_play_file()` 用 pygame 播放，轮询 `get_busy()`，被中断就 `music.stop()`；启动时 `warmup()` 预热音频设备。
 8. edge 失败 → `_play_sapi()`：pyttsx3 新建 engine，按 lang 选中文或英文系统声音，`runAndWait()`；失败只警告一次。
 9. `shutdown()` 停线程、清队列、退出 mixer。
@@ -723,8 +723,8 @@ reply: 好的，模电实验报告已经标记为完成了。
 | `clean_tts_text(text)` | `voice` | 原始回复 | 可朗读文本 | 不清洗 → 把代码、URL、Markdown 符号全念出来 |
 | `Speaker.speak(text, interrupt=True)` | 单例 `speaker` | 文本、是否打断 | bool | 阻塞调用 → 窗口卡住；不清队列 → 旧回复排队念 |
 | `pick_profile(text)` | `voice` | 文本 | `{voice,rate,pitch,lang}` | 不按语言选 → 中文用英文音色；忽略显式音色 → 用户选了嗓子又被覆盖 |
-| `split_tts_text(text, max_len)` | `voice` | 文本、段长 | 句子列表 | 切太碎 → 请求变多；不切 → 首句等整段合成 |
-| `StreamFeed.feed(delta)` | `voice` | 流式增量 | 完整句子列表 | 不按句切 → 仍要等整段回复才出声 |
+| `split_tts_text(text, max_len)` | `voice` | 文本、段长 | 句子列表 | 旧接口，GUI 不再调用；保留给兼容/测试，误接回窗口会恢复逐句起播 |
+| `StreamFeed.feed(delta)` | `voice` | 流式增量 | 完整句子列表 | 旧接口，GUI 不再调用；误接回窗口会恢复流式朗读 |
 | `Speaker._play_edge(text)` | 内部 | 文本 | bool | 不设超时 → 网络挂起时 worker 卡死 |
 | `Speaker._play_file(path)` | 内部 | mp3 路径 | bool | 不轮询中断 → 用户发新消息后还在念旧内容 |
 | `Speaker._play_sapi(text, lang)` | 内部 | 文本、语言 | bool | 不按 lang 选 → 英文文本用中文声音念 |
@@ -738,15 +738,43 @@ reply: 好的，模电实验报告已经标记为完成了。
 | `health_check()` | `voice` | 无 | bool | 只看 import 不看设备 → 有库但没声卡时仍报 OK（播放时会降级） |
 
 ### 代价与边界
-- edge-tts 需要网络，首段合成实测约 2.9~3.6 秒（受网络影响）；同一段有缓存，重复不再请求。
+- edge-tts 需要网络，整段合成耗时随文本长度增加；同一段有缓存，重复不再请求。
 - 六套在线音色都真实存在于 edge-tts。语种与音色已解绑，允许跨语言组合，但不保证音质：按地区设计的音色念另一种语言通常不自然，部分组合可能合成失败；`en-US-BrianMultilingualNeural` 是多语音色，跨语言相对更稳。界面只提示，不替用户禁用组合。
 - 英文语种只控制拼写/用词，地区口音由对应音色体现；模型不保证 100% 不混入美式拼写，必要时后续加拼写后处理。
 - SAPI 音色比 edge 机械，语速/音量可调但情感有限；离线模式只能选系统已安装的声音，且不强制回复语种。
-- 只做 TTS，不做 ASR；不能语音输入，也不能词级同步高亮。
+- 整段合成意味着长回复要等文字全部生成完才出声；`TTS_MAX_CHARS=240` 仍会截断超长内容，没有词级同步高亮。
 - 播放依赖 pygame/SDL 音频设备；设备不可用时只显示文字，不反复重试。
 - 长回复截断到 240 字，避免念完整篇报告；需要完整朗读可调大 `TTS_MAX_CHARS`。
 
-**验证**：`tests/test_voice.py` 15/15（清洗、截断、音色路由、语种与音色独立、旧值迁移、跨语种提示、`follow` 跟随、分句、流式句切、队列、降级、健康检查）；6 个选定音色真实合成成功（`logs/voice_check/`）；真实模型 `brain.ask_baymax("你是谁？")` 在 `en-GB/en-HK/en-US/en-CA` 下均返回英文，在 `zh-TW` 下返回繁體中文，`zh-CN/auto` 保持中文。解绑后 `set_language_mode("en-GB")` + `set_voice_mode("zh-CN")` 仍保持英文回复、音色为 `zh-CN-YunxiNeural`，两项互不覆盖。
+**验证**：`tests/test_voice.py` 15/15（清洗、截断、音色路由、语种与音色独立、旧值迁移、跨语种提示、`follow` 跟随、整段一次合成、队列、降级、健康检查）；6 个选定音色真实合成成功（`logs/voice_check/`）；整段中文回复真实合成 1 个 mp3（5.376 秒，`logs/tts_whole_reply_check.mp3`）；真实模型 `brain.ask_baymax("你是谁？")` 在 `en-GB/en-HK/en-US/en-CA` 下均返回英文，在 `zh-TW` 下返回繁體中文，`zh-CN/auto` 保持中文。解绑后 `set_language_mode("en-GB")` + `set_voice_mode("zh-CN")` 仍保持英文回复、音色为 `zh-CN-YunxiNeural`，两项互不覆盖。
+
+---
+
+## 决策 9.1：语音输入选 Vosk 离线小模型，不接云端识别（2026-11-28）
+
+### 场景
+Wen 想不敲键盘，直接说“明天下午三点提醒我交周报”，文字进输入框后再确认发送。要求录音不出本机、安装不复杂、在 PyQt6 窗口里不卡 UI；不要为了一个语音输入引入 torch、CUDA 或几个 GB 的依赖。
+
+### 两种做法
+- **做法 A：在线识别 API（Google/Whisper API 等）。** 识别准、模型不占硬盘，但录音要上传，网络不稳就不可用，还要处理密钥与费用。
+- **做法 B：本地 Vosk 中文小模型 + `sounddevice`。** 约 42MB，CPU 可跑，不需要 torch；识别在本地完成。准确率不如大模型，嘈杂环境更明显。
+
+### 决定
+**用做法 B。** 先保证“离线、能装、能跑”，不把识别准确率押在云端；模型外置到 `models/`，不塞进仓库和 exe。
+
+### 流程
+1. `core/asr.py` 懒加载 `vosk.Model`；`model_available()` 只检查目录和 `am/`，不阻塞启动。
+2. `record_until(stop_event)` 用 `sd.RawInputStream` 采 16kHz / 单声道 / int16，`AcceptWaveform` 拿分段结果，`PartialResult` 回填临时文本，`FinalResult` 收尾。
+3. `normalize_text()` 去掉汉字之间的空格，保留英文单词间空格；多段停顿用逗号连接。
+4. `ASRWorker(QThread)` 把加载、录音、识别放到子线程，通过 `partial/done/error/state` 回主线程；按钮点一下开始、再点一下停止，结果只填输入框，不自动发送。
+5. `send()` 时若还在录音，先停并丢弃迟到的 ASR 结果，避免把文字又写回输入框；`closeEvent()` 停线程并等待退出。
+
+### 代价与边界
+- 小模型对安静环境短句够用；口音、嘈杂环境、长句准确率会下降，标点不保证。
+- 首次加载模型有几百毫秒到数秒开销；模型缺失/依赖缺失/麦克风打不开时给可读提示，键盘输入不受影响。
+- 没有唤醒词、没有流式云端识别、没有说话人分离；真人麦克风端到端仍需复测。
+
+**验证**：`tests/test_asr.py` 7/7；真实模型 `vosk-model-small-cn-0.22` 完整下载 43,898,754 字节，识别中文 TTS 样本输出“你好我是安迪”；`sounddevice` 识别到本机麦克风阵列，16kHz/单声道/int16 参数校验通过。
 
 ---
 
@@ -826,9 +854,14 @@ Andy 在窗口里回答“现在是 2026年11月27日 星期日 14:02”：日�
 | `TTS_RATE_ZH/EN` | `+0%` / `+0%` | 同上 | 中/英语速 | 调大 → 更快但听不清 |
 | `TTS_PITCH_ZH/EN` | `+0Hz` / `+0Hz` | 同上 | 中/英音调 | 调太低 → 声音发闷 |
 | `TTS_RATE/PITCH` | `+0%` / `+0Hz` | 同上 | 强制 `TTS_VOICE` 时的参数 | 与固定音色配合使用 |
-| `TTS_CHUNK_CHARS` | 80 字 | 同上 | 分句合成段长 | 调小 → 首句更快但请求更多；调大 → 首句更慢 |
+| `TTS_CHUNK_CHARS` | 80 字 | 同上 | 兼容旧配置；当前整段合成不再分句 | 改它不会再影响起播时机；误接回旧 `split_tts_text` 才生效 |
 | `TTS_MAX_CHARS` | 240 字 | 同上 | 单次播报上限 | 调大 → 长回复念很久 |
 | `TTS_SAPI_RATE` | 175 | 同上 | SAPI 兜底语速 | 调大 → 更急促 |
+| `ASR_ENABLED` | 1 | `config.py` | 语音输入开关 | 设 0 → 按钮提示已关闭 |
+| `ASR_MODEL_DIR` | `models/vosk-model-small-cn-0.22` | 同上 | 离线模型目录 | 路径错/缺 `am/` → 语音输入报模型不完整 |
+| `ASR_SAMPLE_RATE` | 16000 | 同上 | 麦克风采样率 | 与模型不匹配 → Vosk 初始化/识别异常 |
+| `ASR_BLOCK_SIZE` | 4000 | 同上 | 每次读的 PCM 帧数 | 太小 → 读得频繁；太大 → 停止响应变慢 |
+| `ASR_MAX_SECONDS` | 30 | 同上 | 单次录音上限 | 调大 → 可录更长，但误触时占麦克风更久 |
 | `TICK_SECONDS` | 30 秒 | `scheduler.py` | 心跳间隔 | 调小 → 更准但唤醒多 |
 | `MISS_GRACE_MINUTES` | 10 分钟 | 同上 | 迟到多久算"错过"（≤10 分钟算"刚到点"，也会补发） | 调小 → 更多被标成"错过"；调大 → 更多算"刚到点" |
 | 事实长度 | 1~60 字 | `memory.extract_facts` | 单条事实上限 | 调大 → 注入变长 |
@@ -854,6 +887,7 @@ Andy 在窗口里回答“现在是 2026年11月27日 星期日 14:02”：日�
 | MCP 协议、工具发现、权限门 | `core/mcp_client.py` | `load_servers` / `MCPClient` / `MCPManager` / `make_function_name` |
 | MCP demo server | `scripts/mcp_demo_server.py` | `echo` / `now` / `write_note` |
 | 语音清洗、合成、播放 | `core/voice.py` | `clean_tts_text` / `Speaker` / `health_check` |
+| 离线语音识别 | `core/asr.py` | `model_available` / `load_model` / `record_until` / `recognize_wav` / `normalize_text` / `status` |
 | 对话、工具循环、时间拦截 | `core/brain.py` | `ask_baymax` / `_stream_once` / `needs_time_clarify` |
 | 首位用户建档 | `core/profile.py` | `ensure_first_user` / `get_user_name` |
 | 窗口、看板、提醒浮层 | `desktop/main_window.py` | `BaymaxWindow` / `TaskPage` / `ReminderPage` |
@@ -873,7 +907,7 @@ Andy 在窗口里回答“现在是 2026年11月27日 星期日 14:02”：日�
 | 提醒规则算得对不对 | `python -m core.scheduler` | 打印 once/daily/weekly 的 `compute_next` 结果 |
 | 工具是否真的执行 | `python scripts/check_multi_tool.py` | 日志出现 `[tool] task_update ... -> True`；脚本每次跑用独立测试库，不污染正式数据 |
 | 建档内容 | `python scripts/init_user.py --show` | 显示 Wen / 2026-11-25 / Andy |
-| 单元测试 | `python -m pytest tests -q` | 84 passed（含 MCP 7、语音与语种解绑 15、基本问答 16） |
+| 单元测试 | `python -m pytest tests -q` | 91 passed（含 MCP 7、语音与语种解绑 15、基本问答 16、ASR 7） |
 | 基本问答校准 | `python -m pytest tests/test_basic_answers.py -q` | 16 passed：星期/日期/几点本地回答，任务句不拦截，错误时间纠正，条件句不误改 |
 | MCP 协议与权限 | `python -m pytest tests/test_mcp.py -q` | 7 passed：握手、发现、只读、写入拒绝/确认、坏命令隔离 |
 | MCP 真实配置 | 复制 `mcp_servers.example.json` 为 `mcp_servers.json`，启动 `python main.py --selftest` | 日志出现“MCP：1 个 server，3 个工具” |
@@ -912,7 +946,7 @@ Andy 在窗口里回答“现在是 2026年11月27日 星期日 14:02”：日�
 | 16 | MCP 写入默认全关 | 全局 `MCP_ALLOW_WRITE=0`，server 还要 `allow_write=true` | 忘了开就一直拒绝，不会误写 | 按需开；每次仍会确认 |
 | 17 | MCP 工具描述不完全可信 | 描述和返回来自外部 server | 恶意 server 可能诱导模型调用危险工具 | 只接可信 server；写工具逐次确认；不把返回当指令 |
 | 18 | 语音依赖网络与音频设备 | edge-tts 需联网；SAPI 需声卡 | 断网首句慢；无设备时静音 | 失败只提示一次，不阻塞文字；可调 SAPI 兜底 |
-| 19 | 只做 TTS，不做 ASR | 没有麦克风输入、没有唤醒词 | 只能听，不能说 | 后续加按住说话 + ASR 服务 |
+| 19 | 语音输入先做 Vosk 离线小模型 | 没有唤醒词、没有说话人分离、真人麦克风端到端未复测 | 不联网也能说；准确率受环境影响 | 后续按实际识别质量决定换大模型或加云端口径 |
 
 ---
 

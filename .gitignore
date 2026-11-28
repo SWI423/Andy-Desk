@@ -9,6 +9,9 @@ build/
 # 数据（SQLite 与冒烟测试库都不入库）
 data/
 
+# 离线语音模型（体积大，按 README 单独下载）
+models/
+
 # 日志
 logs/
 *.log

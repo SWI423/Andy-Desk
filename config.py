@@ -55,7 +55,16 @@ MCP_TIMEOUT = float(os.getenv("MCP_TIMEOUT", "20"))        # 单次请求超时�
 MCP_MAX_TOOLS = int(os.getenv("MCP_MAX_TOOLS", "24"))     # 最多暴露给模型的 MCP 工具数
 MCP_ALLOW_WRITE = os.getenv("MCP_ALLOW_WRITE", "0").lower() in ("1", "true", "on")
 
-# === 语音（TTS）===
+# === 语音输入（ASR，离线）===
+# Vosk 中文小模型：models/vosk-model-small-cn-0.22（约 42MB，需单独下载）
+ASR_ENABLED = os.getenv("ASR_ENABLED", "1").lower() not in ("0", "false", "off")
+ASR_MODEL_DIR = os.path.join(BASE_DIR, os.getenv(
+    "ASR_MODEL_DIR", os.path.join("models", "vosk-model-small-cn-0.22")))
+ASR_SAMPLE_RATE = int(os.getenv("ASR_SAMPLE_RATE", "16000"))
+ASR_BLOCK_SIZE = int(os.getenv("ASR_BLOCK_SIZE", "4000"))
+ASR_MAX_SECONDS = int(os.getenv("ASR_MAX_SECONDS", "30"))
+
+# === 语音播报（TTS）===
 TTS_ENABLED = os.getenv("TTS_ENABLED", "0").lower() in ("1", "true", "on")
 # TTS_VOICE 留空 = 按文本语言自动选（中文 ZH / 英文 EN）；填了则强制使用该音色
 TTS_VOICE = os.getenv("TTS_VOICE", "").strip()
@@ -74,7 +83,7 @@ TTS_PITCH_ZH = os.getenv("TTS_PITCH_ZH", "+0Hz")
 TTS_PITCH_EN = os.getenv("TTS_PITCH_EN", "+0Hz")
 TTS_VOLUME = os.getenv("TTS_VOLUME", "+0%")
 TTS_MAX_CHARS = int(os.getenv("TTS_MAX_CHARS", "240"))          # 单次播报上限，避免长回答念太久
-TTS_CHUNK_CHARS = int(os.getenv("TTS_CHUNK_CHARS", "80"))       # 分句合成，降低首句等待
+TTS_CHUNK_CHARS = int(os.getenv("TTS_CHUNK_CHARS", "80"))       # 兼容旧配置；当前整段合成不再分句
 TTS_SAPI_RATE = int(os.getenv("TTS_SAPI_RATE", "175"))          # pyttsx3 兜底语速
 TTS_SAPI_VOLUME = float(os.getenv("TTS_SAPI_VOLUME", "0.9"))
 

@@ -27,6 +27,7 @@ def health_report():
         ("向量层", "core.embedding"),
         ("MCP 客户端", "core.mcp_client"),
         ("语音层", "core.voice"),
+        ("语音输入", "core.asr"),
     ):
         try:
             mod = __import__(importer, fromlist=["health_check"])

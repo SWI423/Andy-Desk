@@ -26,7 +26,8 @@ Andy Desk 是一个运行在 Windows 桌面的个人事务管理助手：左边�
 | 记长期事实 | “以后十点后别提醒我学习” | `memory_save` → `semantic_facts` |
 | 换说法找往事 | “我那个证的事怎么样了” | embedding-3 语义检索 + 关键词 RRF |
 | 接外部工具 | “用 demo 回显一下这句话” | MCP stdio 客户端 + 权限门 |
-| 语音播报 | 打开输入框旁“语音”开关；在“语言/音色”里分开选回复语种和朗读音色 | edge-tts 六音色 / SAPI 兜底 |
+| 语音输入 | 点输入框旁“🎤 语音输入”，说完再点“停止录音” | Vosk 离线识别 + sounddevice 麦克风采集 |
+| 语音播报 | 打开输入框旁“朗读”开关；在“语言/音色”里分开选回复语种和朗读音色 | 回复完整后整段合成一次；edge-tts 六音色 / SAPI 兜底 |
 | 手动管理 | 左侧看板新建 / 开始 / 完成 / 编辑 / 删除 | PyQt6 |
 
 时间规则：说“提醒”但没给钟点时，Andy 会先反问，不会瞎猜一个时间。
@@ -40,6 +41,7 @@ Andy Desk 是一个运行在 Windows 桌面的个人事务管理助手：左边�
 - SQLite：任务、提醒、对话事件、语义事实、向量索引
 - Embedding-3（2048 维）：语义检索与向量编解码
 - MCP（stdio + JSON-RPC 2.0）：外部工具发现与调用
+- Vosk + sounddevice：离线语音输入（中文小模型，16kHz 单声道）
 - edge-tts、pyttsx3、pygame：在线 TTS、离线兜底、音频播放
 - numpy、python-dotenv、pytest
 
@@ -95,9 +97,27 @@ notepad mcp_servers.json
 
 写入型工具默认拒绝；确认安全后，在 `.env` 设 `MCP_ALLOW_WRITE=1`，并在 server 配置里写 `"allow_write": true`，每次执行还会弹确认框。
 
-### 3.2 可选：语音播报、语种与音色
+### 3.2 可选：语音输入（离线 ASR）
 
-窗口输入框旁有“语音”开关，勾选即生效；旁边的“语言/音色”按钮打开两个独立下拉框：**回复语种**决定 Andy 用哪种语言回答，**朗读音色**只决定用哪个声音读出来，两者不再捆绑。
+语音输入把“说话”转成输入框里的文字，默认不自动发送，识别完可以改字再按回车。
+
+1. 下载 Vosk 中文小模型（约 42MB）：
+
+```powershell
+New-Item -ItemType Directory -Force models | Out-Null
+curl.exe -L -o models\vosk-model-small-cn-0.22.zip https://alphacephei.com/vosk/models/vosk-model-small-cn-0.22.zip
+Expand-Archive models\vosk-model-small-cn-0.22.zip -DestinationPath models
+```
+
+2. 确认目录是 `models\vosk-model-small-cn-0.22\am`，不是多套一层。
+3. 启动后点输入框旁的“🎤 语音输入”，首次会加载模型；再点一次“停止录音”，文字会填进输入框。
+4. 模型目录可以用 `.env` 的 `ASR_MODEL_DIR` 改成绝对路径；没有模型时按钮会提示，但键盘输入不受影响。
+
+> 当前用轻量中文模型，安静环境下短句识别够用；嘈杂环境或长句准确率会下降。它不把录音上传到云端，模型和识别都在本机完成。
+
+### 3.3 可选：语音播报、语种与音色
+
+窗口输入框旁有“朗读”开关，勾选即生效；旁边的“语言/音色”按钮打开两个独立下拉框：**回复语种**决定 Andy 用哪种语言回答，**朗读音色**只决定用哪个声音读出来，两者不再捆绑。
 
 回复语种（7 档）：
 
@@ -129,7 +149,7 @@ python main.py --cli --voice --lang en-GB
 python main.py --cli --voice --lang zh-CN --voice-mode en-GB
 ```
 
-或在 `.env` 里设 `TTS_ENABLED=1`。在线用 edge-tts，网络或接口失败会自动退回 Windows SAPI；两者都不可用时只显示文字，不影响对话。
+或在 `.env` 里设 `TTS_ENABLED=1`。回复完整后整段合成一次，不再边流式边一句一句读；在线用 edge-tts，网络或接口失败会自动退回 Windows SAPI；两者都不可用时只显示文字，不影响对话。
 
 ### 4. 启动
 
@@ -160,9 +180,10 @@ python scripts/chat_flow.py             # 11 轮连续对话流程（真调模�
 python scripts/backfill_embeddings.py --status   # 查看向量索引状态
 python scripts/mcp_demo_server.py       # demo MCP server（一般由客户端自动拉起，不用手跑）
 
-python -m pytest tests -q               # 84 项单测
+python -m pytest tests -q               # 91 项单测
 python -m pytest tests/test_basic_answers.py -q   # 基本问答校准 16 项
 python -m pytest tests/test_voice.py -q           # 语音与语种解绑 15 项
+python -m pytest tests/test_asr.py -q             # 语音输入纯逻辑 7 项
 ```
 
 测试脚本默认使用独立数据库（`data/audit_*`、`data/memeval_*` 等），不会污染正式库 `data/baymax.db`。
@@ -194,14 +215,16 @@ Andy-Desk/
 │  ├─ scheduler.py      提醒规则、心跳调度、启动补发
 │  ├─ tools.py          8 个内置工具 + MCP 工具动态合并
 │  ├─ mcp_client.py     MCP stdio 客户端、工具发现、权限门
-│  ├─ voice.py          TTS 清洗、edge-tts / SAPI、异步播放
+│  ├─ asr.py            离线语音输入（Vosk + sounddevice）
+│  ├─ voice.py          TTS 清洗、edge-tts / SAPI、整段异步播放
 │  ├─ brain.py          流式对话 + 工具循环 + 时间硬拦截
 │  └─ rag.py            （预留）
 ├─ desktop/
-│  ├─ main_window.py    三线看板 + 对话 + 提醒 + 语音开关
+│  ├─ main_window.py    三线看板 + 对话 + 提醒 + 语音输入/朗读
 │  └─ theme.py          浅色主题
-├─ docs/                PRD / WBS / MEMORY_DESIGN / DECISIONS / PROGRESS / TEST_REPORT
+├─ docs/                PRD / WBS / MEMORY_DESIGN / DECISIONS / PROGRESS / DEVELOPMENT_PLAN
 │  └─ images/           README 截图
+├─ models/              离线语音模型（体积大，不入库）
 ├─ scripts/             冒烟、评测、审计、补索引、MCP demo server
 ├─ tests/               pytest
 ├─ mcp_servers.example.json  MCP 配置模板
@@ -214,7 +237,7 @@ Andy-Desk/
 ## 架构
 
 ```text
-PyQt6 窗口（语音开关）
+PyQt6 窗口（语音输入 / 朗读）
    ↓ 用户输入
 brain：时间拦截 → 上下文组装 → 模型（流式）→ 工具循环
    ↓                              ↓
@@ -280,7 +303,7 @@ MCP 让 Andy 用“插头”的方式接外部能力，而不是每加一个功�
 
 ## 语音播报、语种与音色
 
-- 窗口输入框旁有“语音”开关和“语言/音色”按钮，两项设置分别存 `QSettings` 的 `language_mode` 与 `voice_mode`，下次启动保持。
+- 窗口输入框旁有“朗读”开关和“语言/音色”按钮，两项设置分别存 `QSettings` 的 `language_mode` 与 `voice_mode`，下次启动保持。
 - **回复语种**七档：自动、中文（大陆）、中文（台灣）、English (US/UK/Canada/Hong Kong）。它只决定回复语言，不决定音色。
 - **朗读音色**八档：跟随语种（默认）、大陆中文、台灣中文、English (US/UK/Canada/Hong Kong)、离线 SAPI。它只决定 `edge-tts` 声音，不改变回复语种。
 - 默认音色：`zh-CN-YunxiNeural`（大陆中文）、`zh-TW-HsiaoChenNeural`（台灣中文）、`en-US-BrianMultilingualNeural`（美式英语）、`en-GB-RyanNeural`（英式）、`en-CA-LiamNeural`（加拿大）、`en-HK-SamNeural`（香港）。语速/音调默认 `+0% / +0Hz`。
@@ -289,7 +312,8 @@ MCP 让 Andy 用“插头”的方式接外部能力，而不是每加一个功�
 - 终端可用 `python main.py --cli --voice --lang en-GB` 只切语种，或再加 `--voice-mode zh-CN` 单独指定音色；也可在 `.env` 设 `TTS_ENABLED=1`。
 - 合成顺序：**edge-tts 在线**（按当前音色设置）→ 失败退回 **Windows SAPI**（按文本语言选系统语音）→ 都失败只显示文字。
 - 播放走独立线程 + 队列，不阻塞对话；新消息会打断上一段播报。
-- **降延迟**：模型流式输出时按句切分，第一句完整就送去合成并播放，不再等整段回复；每段再按 `TTS_CHUNK_CHARS` 切分，音频设备启动时预热。edge-tts 首段仍有约 3 秒网络/服务开销。
+- **整段合成**：回复流式显示时不再边出字边朗读；等 `_on_done()` 拿到完整回复，整段交给 TTS 一次合成、一个音频文件后播放。这样句子衔接更自然，但长回复要等整段生成完才出声；`TTS_MAX_CHARS` 仍会把超长文本截断。
+- 音频设备启动时会预热，第一次播放仍有初始化开销；edge-tts 首段约有 3 秒网络/服务延迟。
 - 播报前会去掉 Markdown、代码块、链接，超过 `TTS_MAX_CHARS` 自动截断，避免念一大段代码。
 
 ---
@@ -316,17 +340,18 @@ MCP 让 Andy 用“插头”的方式接外部能力，而不是每加一个功�
 - **单用户、无登录**；数据在本地 `data/baymax.db`。
 - 对话依赖网络与智谱 API；断网时看板和提醒仍可用，对话会提示失败原因。
 - **MCP 只支持 stdio server**；远程 HTTP/SSE 传输尚未实现。MCP 工具描述来自外部 server，接入前要确认来源可信，防止提示注入。
-- **语音播报**：在线音色依赖 edge-tts 网络；离线退回 Windows SAPI（音色较机械，且不强制语种）。首段合成仍有约 3 秒网络/服务开销，这是 edge-tts 本身的延迟，不是等整段回复。没有音频设备时只显示文字，不重试轰炸。
+- **语音播报**：在线音色依赖 edge-tts 网络；离线退回 Windows SAPI（音色较机械，且不强制语种）。回复完整后整段合成一次，长回复要等文字全部生成完才出声；edge-tts 合成本身仍有网络/服务延迟。没有音频设备时只显示文字，不重试轰炸。
+- **语音输入**：Vosk 中文小模型离线识别，安静环境短句够用；嘈杂环境、口音、长句准确率会下降，标点不保证；模型缺失/麦克风打不开时按钮给提示，不影响键盘输入。
 
 ---
 
-## 验证记录（2026-11-25 ~ 2026-11-27）
+## 验证记录（2026-11-25 ~ 2026-11-28）
 
 | 检查 | 方式 | 结果 |
 |---|---|---|
-| 克隆复跑 | 从 GitHub 重新 clone 后 `pytest tests -q` | **84/84 PASS**（提交 `a97b9e4`，2026-11-27） |
-| 本地全量 | D 盘与开发副本 `pytest tests -q` | **84/84 PASS**（含 MCP 7 项、语音与语种解绑 15 项、基本问答 16 项） |
-| 单测 | `pytest tests -q` | 本地 84 项全部通过 |
+| 克隆复跑 | 从 GitHub 重新 clone 后 `pytest tests -q` | 上一轮 **84/84 PASS**（提交 `a97b9e4`，2026-11-27）；本轮改动尚未重跑克隆 |
+| 本地全量 | D 盘 `pytest tests -q` | **91/91 PASS**（含 MCP 7 项、语音与语种解绑 15 项、基本问答 16 项、ASR 7 项） |
+| 单测 | `pytest tests -q` | 本地 91 项全部通过 |
 | 离线功能审计 | `scripts/functional_audit.py` | **50/50 PASS** |
 | 记忆检索评测 | `scripts/memory_eval.py` | 混合 **R@1 100% / R@3 100% / MRR 1.00 / 噪声 0.10** |
 | 记忆扩展复核 | `scripts/eval_memory.py --variant hybrid` | 39 条语料 / 15 问句 **hit@1 100%、MRR 1.00** |
@@ -334,16 +359,17 @@ MCP 让 Andy 用“插头”的方式接外部能力，而不是每加一个功�
 | 多轮连续对话 | `scripts/chat_flow.py` | 11 轮 **4/4 PASS** |
 | 检索降级 | 单测 `test_fallback_when_embedding_down` | 向量不可用时仍按关键词召回 |
 | MCP 链路 | `tests/test_mcp.py` + demo server | 握手、发现、只读调用、写入拒绝/确认、坏命令隔离 **7/7 PASS** |
-| 语音与语种 | `tests/test_voice.py` + 真实合成 | 清洗/截断/音色路由/语种音色解绑/跨语种提示/流式分句/降级 **15/15 PASS**；6 个选定音色真实合成成功 |
+| 语音与语种 | `tests/test_voice.py` + 真实合成 | 清洗/截断/音色路由/语种音色解绑/跨语种提示/整段一次合成/降级 **15/15 PASS**；选定音色真实合成成功 |
+| 语音输入 | `tests/test_asr.py` + 真实 Vosk 模型 | 文本归一化/缺模型/假流录音/partial/状态 **7/7 PASS**；中文 TTS 样本转 16k WAV 后识别出“你好我是安迪” |
 | 解绑独立性 | `set_language_mode` / `set_voice_mode` / `pick_profile` | 切语种不改音色、切音色不改语种；`follow` 按语种自动选音色；跨语言组合给出提示但不拦截 **PASS** |
 | 跨语言合成抽样 | 中文文本 + `en-GB`、英文文本 + `zh-CN`、中文文本 + `en-US` | **3/3 合成成功**；只证明接口接受组合，音质是否自然未主观评分，样本在 `logs/voice_cross/` |
 | 语种实跑 | `brain.ask_baymax("你是谁？")` 切到 en-GB / en-HK / en-US / en-CA / zh-TW | 中文提问分别得到英文/繁體中文回复；`zh-CN` 与 `auto` 保持中文 |
 | 基本问答校准 | `tests/test_basic_answers.py` + `ask_baymax` 实跑 | 中英星期/日期/时间 **16/16 PASS**；中英文错误星期/时间均按本机时钟纠正 |
 | GUI 全流程 | `scripts/smoke_gui.py` | 建任务 → 对话 → 工具结果 → 提醒浮层 → 截图 |
-| 窗口自检 | `python main.py --selftest` | 10 项检查；配好 `.env` 时全 OK，缺 key 仅“对话核心”FAIL |
+| 窗口自检 | `python main.py --selftest` | 11 项检查；配好 `.env` 与 ASR 模型时全 OK，缺 key 仅“对话核心”FAIL |
 | 并发写 | 8 线程建任务 | 0 错误、8 条全在、无重复 |
 
-未覆盖：长时间挂机跨天、真实到点触发、100 次混合读写压测、多用户 / 多设备、真实第三方 MCP server 兼容性。缺陷与修法见 `docs/TEST_REPORT.md`。
+未覆盖：长时间挂机跨天、真实到点触发、100 次混合读写压测、多用户 / 多设备、真实第三方 MCP server 兼容性、真人麦克风端到端识别、嘈杂环境识别率。缺陷与修法见 `docs/TEST_REPORT.md`。
 
 ---
 
@@ -356,7 +382,7 @@ MCP 让 Andy 用“插头”的方式接外部能力，而不是每加一个功�
 - [x] 回归测试、记忆评测、任务评测
 - [x] MCP 客户端框架（stdio、工具发现、权限门）
 - [x] 语音播报（edge-tts + SAPI 兜底）
-- [ ] 语音输入（ASR，按住说话）
+- [x] 语音输入（ASR，点击开始/停止，离线 Vosk）
 - [ ] 远程 MCP（HTTP/SSE）与工具级权限配置
 - [ ] Windows 安装包
 

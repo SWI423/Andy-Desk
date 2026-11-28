@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
 )
 
 from config import APP_NAME, DOMAINS, ensure_dirs
-from core import db, tasks, scheduler, brain, voice
+from core import db, tasks, scheduler, brain, voice, asr
 
 
 # ============ 后台线程 ============
@@ -42,6 +42,36 @@ class ChatWorker(QThread):
         except Exception as e:
             res = {"reply": f"出错了：{e}", "tools_called": [], "error": str(e)}
         self.done.emit(res)
+
+
+class ASRWorker(QThread):
+    """麦克风录音 + Vosk 识别放到子线程，避免卡住窗口。"""
+    partial = pyqtSignal(str)
+    done = pyqtSignal(str)
+    error = pyqtSignal(str)
+    state = pyqtSignal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._stop = threading.Event()
+
+    def stop(self):
+        self._stop.set()
+
+    def run(self):
+        try:
+            self.state.emit("loading")
+            asr.load_model()  # 先加载模型，界面能显示“准备中”
+            self.state.emit("listening")
+            text = asr.record_until(
+                self._stop,
+                on_partial=lambda s: self.partial.emit(s),
+            )
+            self.done.emit(text)
+        except asr.AsrError as e:
+            self.error.emit(str(e))
+        except Exception as e:
+            self.error.emit(f"语音识别失败：{e}")
 
 
 class SchedulerBridge(QObject):
@@ -550,8 +580,9 @@ class BaymaxWindow(QMainWindow):
         voice.set_voice_mode(saved_voice)
         if voice_enabled:
             voice.speaker.warmup()
-        self._voice_feed = voice.StreamFeed()
-        self._voice_stream_chars = 0
+        self._asr_worker = None
+        self._asr_ignore_result = False
+        self._asr_partial_text = ""
         self._streamed_chars = 0
 
         self._worker = None
@@ -645,8 +676,12 @@ class BaymaxWindow(QMainWindow):
         self.input = QLineEdit()
         self.input.setPlaceholderText("比如：明天下午三点提醒我交周报 / 软考冲刺记到学习里")
         self.input.returnPressed.connect(self.send)
-        self.voice_check = QCheckBox("语音")
-        self.voice_check.setToolTip("打开后 Andy 会把回复读出来")
+        self.asr_btn = QPushButton("🎤 语音输入")
+        self.asr_btn.setObjectName("ghost")
+        self.asr_btn.setToolTip("点击开始说话，再点一次停止；识别结果会填入输入框，按回车发送")
+        self.asr_btn.clicked.connect(self._toggle_asr)
+        self.voice_check = QCheckBox("朗读")
+        self.voice_check.setToolTip("打开后 Andy 会把整段回复读出来")
         self.voice_check.setChecked(voice.speaker.enabled)
         self.voice_check.toggled.connect(self._toggle_voice)
         self.voice_btn = QPushButton("语言/音色")
@@ -657,6 +692,7 @@ class BaymaxWindow(QMainWindow):
         self.send_btn.setObjectName("primary")
         self.send_btn.clicked.connect(self.send)
         input_row.addWidget(self.input, 1)
+        input_row.addWidget(self.asr_btn)
         input_row.addWidget(self.voice_check)
         input_row.addWidget(self.voice_btn)
         input_row.addWidget(self.send_btn)
@@ -738,10 +774,14 @@ class BaymaxWindow(QMainWindow):
             return
         if self._worker and self._worker.isRunning():
             return
+        if self._asr_worker and self._asr_worker.isRunning():
+            # 发送时只停录音，丢弃这次 ASR 的迟到结果，避免把文字又写回输入框
+            self._asr_ignore_result = True
+            self._asr_worker.stop()
+            self.asr_btn.setText("结束中…")
+            self.asr_btn.setEnabled(False)
         if voice.speaker.enabled:
             voice.speaker.stop()
-        self._voice_feed = voice.StreamFeed()
-        self._voice_stream_chars = 0
         self._streamed_chars = 0
         self.input.clear()
         self._append_user(text)
@@ -767,12 +807,83 @@ class BaymaxWindow(QMainWindow):
         self.chat.insertPlainText(text)
         self._streamed_chars += len(text)
         self.chat.verticalScrollBar().setValue(self.chat.verticalScrollBar().maximum())
-        if voice.speaker.enabled and text:
-            remaining = max(0, voice.TTS_MAX_CHARS - self._voice_stream_chars)
-            if remaining:
-                for sentence in self._voice_feed.feed(text[:remaining]):
-                    voice.speaker.speak(sentence, interrupt=False)
-            self._voice_stream_chars += len(text)
+
+    # ---- 语音输入（ASR） ----
+    def _toggle_asr(self):
+        if self._asr_worker and self._asr_worker.isRunning():
+            self._asr_worker.stop()
+            self.asr_btn.setText("结束中…")
+            self.asr_btn.setEnabled(False)
+            return
+        ok, reason = asr.model_available()
+        if not ok:
+            QMessageBox.warning(
+                self, "语音输入不可用",
+                f"{reason}\n\n请把 Vosk 中文模型放到 models/vosk-model-small-cn-0.22，"
+                "或在 .env 里用 ASR_MODEL_DIR 指定目录。",
+            )
+            return
+        if self._worker and self._worker.isRunning():
+            return
+        voice.speaker.stop()
+        self._asr_ignore_result = False
+        self._asr_partial_text = ""
+        self._asr_worker = ASRWorker(self)
+        self._asr_worker.partial.connect(self._on_asr_partial)
+        self._asr_worker.done.connect(self._on_asr_done)
+        self._asr_worker.error.connect(self._on_asr_error)
+        self._asr_worker.state.connect(self._on_asr_state)
+        self._asr_worker.finished.connect(self._on_asr_finished)
+        self.asr_btn.setText("准备中…")
+        self.asr_btn.setEnabled(False)
+        self._asr_worker.start()
+
+    def _on_asr_state(self, state: str):
+        if self._asr_ignore_result:
+            return
+        if state == "loading":
+            self.asr_btn.setText("准备中…")
+            self.asr_btn.setEnabled(False)
+        elif state == "listening":
+            self.asr_btn.setText("停止录音")
+            self.asr_btn.setEnabled(True)
+            self.input.setPlaceholderText("正在听…… 说完点“停止录音”")
+
+    def _on_asr_partial(self, text: str):
+        if self._asr_ignore_result:
+            return
+        if self._asr_worker and self._asr_worker.isRunning() and text:
+            self._asr_partial_text = text
+            self.input.setText(text)
+            self.input.setCursorPosition(len(text))
+
+    def _on_asr_done(self, text: str):
+        if self._asr_ignore_result:
+            return
+        text = (text or "").strip()
+        if text:
+            self.input.setText(text)
+            self.input.setFocus()
+            self.input.setCursorPosition(len(text))
+        else:
+            # 只有输入框里仍是这次语音的临时结果时才清空，避免误删手动输入
+            if self._asr_partial_text and \
+                    self.input.text().strip() == self._asr_partial_text.strip():
+                self.input.clear()
+            self.input.setPlaceholderText("没听清，点“语音输入”再试一次")
+
+    def _on_asr_error(self, message: str):
+        if self._asr_ignore_result:
+            return
+        QMessageBox.warning(self, "语音输入失败", message)
+
+    def _on_asr_finished(self):
+        self._asr_ignore_result = False
+        self._asr_partial_text = ""
+        self._asr_worker = None
+        self.asr_btn.setText("🎤 语音输入")
+        self.asr_btn.setEnabled(True)
+        self.input.setPlaceholderText("比如：明天下午三点提醒我交周报 / 软考冲刺记到学习里")
 
     # ---- 语音 ----
     def _choose_voice(self):
@@ -835,11 +946,8 @@ class BaymaxWindow(QMainWindow):
             # 日期/星期/时间等硬拦截直接返回，不经过流式分片
             self._on_chunk(reply)
         if reply and not res.get("error") and voice.speaker.enabled:
-            if self._voice_stream_chars:
-                for sentence in self._voice_feed.flush():
-                    voice.speaker.speak(sentence, interrupt=False)
-            else:
-                voice.speaker.speak(reply)
+            # 整段回复合成一次，避免流式逐句拼接造成的断续和重复起播
+            voice.speaker.speak(reply)
 
     # ---- 提醒回调（调度器线程 -> Qt 主线程）----
     def _on_reminder(self, payload: dict):
@@ -855,6 +963,9 @@ class BaymaxWindow(QMainWindow):
             voice.speaker.speak(f"提醒：{content}")
 
     def closeEvent(self, event):
+        if self._asr_worker and self._asr_worker.isRunning():
+            self._asr_worker.stop()
+            self._asr_worker.wait(2000)
         if self._worker and self._worker.isRunning():
             self._worker.wait(2000)
         voice.speaker.shutdown()
