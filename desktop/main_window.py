@@ -6,19 +6,19 @@
 扩展性：任务/提醒页只依赖 core 层的公开函数；新增能力只需在 core/tools.py 注册工具
 """
 
-import html
 import json
 import threading
 from datetime import datetime
 
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject, QTimer, QSettings
-from PyQt6.QtGui import QTextCursor, QColor
+from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QTabWidget,
-    QTableWidget, QTableWidgetItem, QPushButton, QLineEdit, QTextBrowser,
+    QTableWidget, QTableWidgetItem, QPushButton, QLineEdit,
     QLabel, QDialog, QFormLayout, QComboBox, QDateTimeEdit, QTimeEdit,
     QCheckBox, QTextEdit, QMessageBox, QAbstractItemView, QHeaderView,
-    QStackedWidget, QApplication, QDialogButtonBox,
+    QStackedWidget, QApplication, QDialogButtonBox, QFrame, QScrollArea,
+    QSizePolicy, QGraphicsDropShadowEffect,
 )
 
 from config import APP_NAME, DOMAINS, ensure_dirs
@@ -521,6 +521,183 @@ class VoiceDialog(QDialog):
         return self.voice_combo.currentData() or "follow"
 
 
+# ============ 对话气泡 ============
+
+class MessageBubble(QFrame):
+    """一条左右分列的气泡；Andy 在左，用户和通知靠右/居中。"""
+
+    def __init__(self, role: str, text: str = "", parent=None):
+        super().__init__(parent)
+        self.role = role
+        self._thinking = role == "assistant" and not text
+        self.setObjectName({
+            "user": "userBubble",
+            "assistant": "assistantBubble",
+            "notice": "noticeBubble",
+        }.get(role, "assistantBubble"))
+        self.setSizePolicy(QSizePolicy.Policy.Preferred,
+                           QSizePolicy.Policy.Minimum)
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(14, 10, 14, 10)
+        lay.setSpacing(3)
+
+        if role == "assistant":
+            name = QLabel(APP_NAME)
+            name.setObjectName("bubbleName")
+            lay.addWidget(name)
+
+        self.body = QLabel(text or ("正在思考…" if self._thinking else ""))
+        self.body.setWordWrap(True)
+        self.body.setTextFormat(Qt.TextFormat.PlainText)
+        self.body.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.body.setStyleSheet(
+            "color:#8aa397; background:transparent;" if self._thinking
+            else ("color:#8a5a12; background:transparent;" if role == "notice"
+                  else "color:#233b31; background:transparent;"))
+        lay.addWidget(self.body)
+
+    def append_text(self, text: str):
+        if not text:
+            return
+        if self._thinking:
+            self._thinking = False
+            self.body.setStyleSheet("color:#233b31; background:transparent;")
+            self.body.setText(text)
+        else:
+            self.body.setText(self.body.text() + text)
+
+    def thinking(self) -> bool:
+        return self._thinking
+
+
+class ChatView(QScrollArea):
+    """聊天区：不用 QTextBrowser 拼 HTML，改成可左右分列的气泡。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWidgetResizable(True)
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setHorizontalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setObjectName("chatScroll")
+        self.viewport().setAutoFillBackground(False)
+
+        self.container = QWidget()
+        self.container.setObjectName("chatBody")
+        self.vbox = QVBoxLayout(self.container)
+        self.vbox.setContentsMargins(2, 4, 2, 8)
+        self.vbox.setSpacing(10)
+        self.vbox.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.setWidget(self.container)
+
+        self._bubbles = []
+        self._current = None
+        self._current_row = None
+
+    def _max_width(self, role: str) -> int:
+        base = max(280, self.viewport().width())
+        ratio = 0.68 if role == "user" else 0.82
+        return int(base * ratio)
+
+    def _apply_width(self, bubble: MessageBubble):
+        base = max(280, self.viewport().width())
+        maxw = self._max_width(bubble.role)
+        bubble.setMaximumWidth(maxw)
+        if bubble.role == "assistant":
+            # 让 Andy 的气泡有稳定的阅读宽度，短句也不会缩成一条窄柱
+            bubble.setMinimumWidth(min(maxw, max(300, int(base * 0.72))))
+        elif bubble.role == "notice":
+            # 提醒文字通常一行放得下，避免被挤成两行
+            bubble.setMinimumWidth(min(maxw, 220))
+
+    def _add(self, role: str, text: str = "") -> MessageBubble:
+        bubble = MessageBubble(role, text, self.container)
+        self._apply_width(bubble)
+        row = QHBoxLayout()
+        row.setSpacing(0)
+        if role == "user":
+            row.addStretch(1)
+            row.addWidget(bubble)
+        elif role == "notice":
+            row.addStretch(1)
+            row.addWidget(bubble)
+            row.addStretch(1)
+        else:
+            row.addWidget(bubble)
+            row.addStretch(1)
+        self.vbox.addLayout(row)
+        self._bubbles.append(bubble)
+        self._scroll_bottom()
+        return bubble
+
+    def add_user(self, text: str):
+        self._add("user", text)
+
+    def begin_assistant(self) -> MessageBubble:
+        self.finish_assistant()
+        self._current = self._add("assistant")
+        self._current_row = self.vbox.itemAt(self.vbox.count() - 1).layout()
+        return self._current
+
+    def append_assistant(self, text: str):
+        if not text:
+            return
+        if self._current is None:
+            self.begin_assistant()
+        self._current.append_text(text)
+        self._scroll_bottom()
+
+    def add_assistant(self, text: str):
+        self.begin_assistant()
+        self.append_assistant(text)
+
+    def add_notice(self, text: str):
+        self._add("notice", text)
+
+    def plain_text(self) -> str:
+        """给冒烟测试/日志用的纯文本快照，不是界面渲染路径。"""
+        lines = []
+        for bubble in list(self._bubbles):
+            try:
+                text = bubble.body.text().strip()
+            except RuntimeError:
+                continue
+            if text:
+                lines.append(text)
+        return "\n".join(lines)
+
+    def finish_assistant(self):
+        if self._current is None:
+            return
+        if self._current.thinking():
+            self._remove_current()
+        self._current = None
+        self._current_row = None
+
+    def _remove_current(self):
+        if self._current_row is not None:
+            self.vbox.removeItem(self._current_row)
+        if self._current is not None:
+            self._current.setParent(None)
+            self._current.deleteLater()
+        self._scroll_bottom()
+
+    def _scroll_bottom(self):
+        QTimer.singleShot(
+            0, lambda: self.verticalScrollBar().setValue(
+                self.verticalScrollBar().maximum()))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        for bubble in list(self._bubbles):
+            try:
+                self._apply_width(bubble)
+            except RuntimeError:
+                pass
+
+
 # ============ 主窗口 ============
 
 class BaymaxWindow(QMainWindow):
@@ -595,20 +772,75 @@ class BaymaxWindow(QMainWindow):
         self._status_timer.start(60_000)
 
     # ---- UI ----
-    def _build_ui(self):
-        split = QSplitter(Qt.Orientation.Horizontal)
+    def _card(self) -> QFrame:
+        card = QFrame()
+        card.setObjectName("card")
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(26)
+        shadow.setOffset(0, 5)
+        shadow.setColor(QColor(39, 105, 82, 28))
+        card.setGraphicsEffect(shadow)
+        return card
 
-        # 左：看板
-        left = QWidget()
+    def _stat_card(self, caption: str):
+        card = QFrame()
+        card.setObjectName("stat")
+        card.setMinimumHeight(68)
+        lay = QVBoxLayout(card)
+        lay.setContentsMargins(12, 8, 12, 8)
+        lay.setSpacing(1)
+        value = QLabel("0")
+        value.setObjectName("statValue")
+        cap = QLabel(caption)
+        cap.setObjectName("statCaption")
+        lay.addWidget(value)
+        lay.addWidget(cap)
+        return card, value
+
+    def _build_ui(self):
+        central = QWidget()
+        central.setObjectName("root")
+        root = QVBoxLayout(central)
+        root.setContentsMargins(18, 14, 18, 16)
+        root.setSpacing(12)
+
+        # 顶部品牌栏
+        header = QHBoxLayout()
+        header.setSpacing(10)
+        logo = QLabel("A")
+        logo.setObjectName("logo")
+        logo.setFixedSize(36, 36)
+        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        header.addWidget(logo)
+
+        brand = QVBoxLayout()
+        brand.setSpacing(0)
+        name = QLabel(APP_NAME)
+        name.setObjectName("appName")
+        subtitle = QLabel("学习 · 工作 · 生活助手")
+        subtitle.setObjectName("muted")
+        brand.addWidget(name)
+        brand.addWidget(subtitle)
+        header.addLayout(brand)
+        header.addStretch(1)
+        self.date_label = QLabel("")
+        self.date_label.setObjectName("muted")
+        header.addWidget(self.date_label)
+        root.addLayout(header)
+
+        body = QSplitter(Qt.Orientation.Horizontal)
+        body.setChildrenCollapsible(False)
+        body.setHandleWidth(10)
+
+        # 左：三线看板卡片
+        left = self._card()
         lv = QVBoxLayout(left)
-        lv.setContentsMargins(10, 10, 6, 10)
+        lv.setContentsMargins(16, 16, 16, 14)
+        lv.setSpacing(10)
 
         head = QHBoxLayout()
         title = QLabel("三线看板")
         title.setObjectName("h1")
-        self.status_label = QLabel("")
-        self.status_label.setObjectName("muted")
-        self.status_label.setWordWrap(True)
         head.addWidget(title)
         if self.user_name:
             who = QLabel(f"服务对象：{self.user_name}")
@@ -616,15 +848,29 @@ class BaymaxWindow(QMainWindow):
             head.addWidget(who)
         head.addStretch(1)
         lv.addLayout(head)
+
+        stats = QHBoxLayout()
+        stats.setSpacing(8)
+        due_card, self.stat_due = self._stat_card("今日到期")
+        doing_card, self.stat_doing = self._stat_card("进行中")
+        reminder_card, self.stat_reminders = self._stat_card("待提醒")
+        stats.addWidget(due_card, 1)
+        stats.addWidget(doing_card, 1)
+        stats.addWidget(reminder_card, 1)
+        lv.addLayout(stats)
+
+        self.status_label = QLabel("")
+        self.status_label.setObjectName("muted")
+        self.status_label.setWordWrap(True)
         lv.addWidget(self.status_label)
 
         self.tabs = QTabWidget()
         self.pages = {}
-        for key, name in DOMAINS.items():
+        for key, name_text in DOMAINS.items():
             page = TaskPage(key)
             page.changed.connect(self._refresh_all)
             self.pages[key] = page
-            self.tabs.addTab(page, name)
+            self.tabs.addTab(page, name_text)
 
         self.reminder_page = ReminderPage(self.sched)
         self.reminder_page.changed.connect(self._refresh_all)
@@ -638,45 +884,55 @@ class BaymaxWindow(QMainWindow):
             lambda v: [p.toggle_done(v) for p in self.pages.values()])
         done_row.addWidget(self.show_done)
         done_row.addStretch(1)
-        tool_info = QLabel("能力注册：function calling + 可扩展工具层")
+        tool_info = QLabel("function calling · 可扩展工具层")
         tool_info.setObjectName("muted")
         done_row.addWidget(tool_info)
         lv.addLayout(done_row)
-        split.addWidget(left)
+        body.addWidget(left)
 
-        # 右：对话
-        right = QWidget()
+        # 右：对话卡片
+        right = self._card()
         rv = QVBoxLayout(right)
-        rv.setContentsMargins(6, 10, 10, 10)
+        rv.setContentsMargins(16, 16, 16, 14)
+        rv.setSpacing(10)
 
+        chat_head = QHBoxLayout()
         chat_title = QLabel(f"和 {APP_NAME} 说")
         chat_title.setObjectName("h1")
-        rv.addWidget(chat_title)
+        chat_head.addWidget(chat_title)
+        chat_head.addStretch(1)
+        online = QLabel("● 在线 · 可调用工具")
+        online.setObjectName("badge")
+        online.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        chat_head.addWidget(online)
+        rv.addLayout(chat_head)
 
-        self.chat = QTextBrowser()
-        self.chat.setOpenExternalLinks(False)
-        self.chat.setStyleSheet("""
-            QTextBrowser { background: #ffffff; border: 1px solid #e2e8f0;
-                           border-radius: 10px; padding: 10px; font-size: 14px; }
-        """)
+        self.chat = ChatView()
         rv.addWidget(self.chat, 1)
 
         quick = QHBoxLayout()
+        quick.setSpacing(6)
         for text, payload in (("今日概览", "今天还有什么要紧的？"),
-                              ("新建任务", "__new_task__"),
-                              ("新建提醒", "__new_reminder__")):
+                              ("＋ 新建任务", "__new_task__"),
+                              ("＋ 新建提醒", "__new_reminder__")):
             b = QPushButton(text)
-            b.setObjectName("ghost")
+            b.setObjectName("pill")
             b.clicked.connect(lambda _=False, p=payload: self._quick(p))
             quick.addWidget(b)
         quick.addStretch(1)
         rv.addLayout(quick)
 
-        input_row = QHBoxLayout()
+        composer = QFrame()
+        composer.setObjectName("composer")
+        input_row = QHBoxLayout(composer)
+        input_row.setContentsMargins(10, 6, 8, 6)
+        input_row.setSpacing(4)
         self.input = QLineEdit()
-        self.input.setPlaceholderText("比如：明天下午三点提醒我交周报 / 软考冲刺记到学习里")
+        self.input.setObjectName("chatInput")
+        self.input.setPlaceholderText("说说要做的事，例如：明天下午三点提醒我交周报")
+        self.input.setMinimumHeight(38)
         self.input.returnPressed.connect(self.send)
-        self.asr_btn = QPushButton("🎤 语音输入")
+        self.asr_btn = QPushButton("语音输入")
         self.asr_btn.setObjectName("ghost")
         self.asr_btn.setToolTip("点击开始说话，再点一次停止；识别结果会填入输入框，按回车发送")
         self.asr_btn.clicked.connect(self._toggle_asr)
@@ -684,23 +940,30 @@ class BaymaxWindow(QMainWindow):
         self.voice_check.setToolTip("打开后 Andy 会把整段回复读出来")
         self.voice_check.setChecked(voice.speaker.enabled)
         self.voice_check.toggled.connect(self._toggle_voice)
-        self.voice_btn = QPushButton("语言/音色")
+        self.voice_btn = QPushButton("语种/音色")
         self.voice_btn.setObjectName("ghost")
         self.voice_btn.setToolTip(voice.summary_label())
         self.voice_btn.clicked.connect(self._choose_voice)
         self.send_btn = QPushButton("发送")
         self.send_btn.setObjectName("primary")
+        self.send_btn.setFixedWidth(62)
         self.send_btn.clicked.connect(self.send)
         input_row.addWidget(self.input, 1)
         input_row.addWidget(self.asr_btn)
         input_row.addWidget(self.voice_check)
         input_row.addWidget(self.voice_btn)
         input_row.addWidget(self.send_btn)
-        rv.addLayout(input_row)
-        split.addWidget(right)
+        rv.addWidget(composer)
 
-        split.setSizes([420, 640])
-        self.setCentralWidget(split)
+        hint = QLabel("Enter 发送 · 需要写入数据时 Andy 会先向你确认")
+        hint.setObjectName("muted")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        rv.addWidget(hint)
+        body.addWidget(right)
+
+        body.setSizes([420, 640])
+        root.addWidget(body, 1)
+        self.setCentralWidget(central)
 
         # 浮动提示条（提醒弹出）
         self.toast = QLabel("", self)
@@ -713,7 +976,8 @@ class BaymaxWindow(QMainWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.toast.setGeometry(self.width() - 380, self.height() - 220, 340, 80)
+        # 放在顶部品牌栏的空白区，避免盖住对话和输入框
+        self.toast.setGeometry(max(220, (self.width() - 320) // 2), 10, 320, 52)
 
     # ---- 数据刷新 ----
     def _refresh_all(self):
@@ -723,7 +987,28 @@ class BaymaxWindow(QMainWindow):
         self._refresh_status()
 
     def _refresh_status(self):
-        self.status_label.setText(tasks.overview_text().replace("\n", "　·　"))
+        ov = tasks.today_overview()
+        today = datetime.now()
+        weekdays = "一二三四五六日"
+        self.date_label.setText(
+            f"{today.year}年{today.month}月{today.day}日 "
+            f"星期{weekdays[today.weekday()]}")
+        self.stat_due.setText(str(ov["due_today"]))
+        self.stat_doing.setText(str(ov["doing"]))
+        self.stat_reminders.setText(str(ov["reminders_today"]))
+        if ov["overdue"]:
+            self.status_label.setText(
+                f"今天到期 {ov['due_today']} 项，逾期 {ov['overdue']} 项；"
+                f"先挑一件动工。")
+        elif ov["due_today"]:
+            self.status_label.setText(
+                f"今天到期 {ov['due_today']} 项；先挑一件动工。")
+        elif ov["doing"]:
+            self.status_label.setText(
+                f"正在进行 {ov['doing']} 项，今天没有到期或逾期。")
+        else:
+            self.status_label.setText(
+                "今天没有压着的事，点“＋ 新建任务”记一笔。")
 
     # ---- 对话 ----
     def _greet(self):
@@ -749,12 +1034,10 @@ class BaymaxWindow(QMainWindow):
                     f"先挑一件动手，我帮你盯着剩下的。")
         else:
             text = f"{who}我在。今天没压着的事，想记点什么、设个提醒，直接说。"
-        self.chat.append(f"<p style='color:#0f766e'><b>{APP_NAME}</b></p>"
-                         f"<p>{html.escape(text)}</p>")
+        self.chat.add_assistant(text)
 
     def _append_user(self, text: str):
-        self.chat.append(f"<p style='color:#64748b'><b>你</b></p>"
-                         f"<p>{html.escape(text)}</p>")
+        self.chat.add_user(text)
 
     def _quick(self, payload: str):
         if payload == "__new_task__":
@@ -785,11 +1068,7 @@ class BaymaxWindow(QMainWindow):
         self._streamed_chars = 0
         self.input.clear()
         self._append_user(text)
-        self.chat.append(f"<p style='color:#0f766e'><b>{APP_NAME}</b></p>")
-        cursor = self.chat.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        self.chat.setTextCursor(cursor)
-        self.chat.insertPlainText("\n")
+        self.chat.begin_assistant()
         self.send_btn.setEnabled(False)
         self.input.setEnabled(False)
 
@@ -801,12 +1080,8 @@ class BaymaxWindow(QMainWindow):
     def _on_chunk(self, text: str):
         if not text:
             return
-        cursor = self.chat.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        self.chat.setTextCursor(cursor)
-        self.chat.insertPlainText(text)
+        self.chat.append_assistant(text)
         self._streamed_chars += len(text)
-        self.chat.verticalScrollBar().setValue(self.chat.verticalScrollBar().maximum())
 
     # ---- 语音输入（ASR） ----
     def _toggle_asr(self):
@@ -881,9 +1156,9 @@ class BaymaxWindow(QMainWindow):
         self._asr_ignore_result = False
         self._asr_partial_text = ""
         self._asr_worker = None
-        self.asr_btn.setText("🎤 语音输入")
+        self.asr_btn.setText("语音输入")
         self.asr_btn.setEnabled(True)
-        self.input.setPlaceholderText("比如：明天下午三点提醒我交周报 / 软考冲刺记到学习里")
+        self.input.setPlaceholderText("说说要做的事，例如：明天下午三点提醒我交周报")
 
     # ---- 语音 ----
     def _choose_voice(self):
@@ -938,13 +1213,13 @@ class BaymaxWindow(QMainWindow):
         self.input.setFocus()
         if res.get("tools_called"):
             self._refresh_all()
-        if res.get("error"):
-            self.chat.append(f"<p style='color:#b45309'>{html.escape(res['error'][:200])}</p>")
-        self.chat.append("")
         reply = (res.get("reply") or "").strip()
         if reply and not res.get("error") and not self._streamed_chars:
             # 日期/星期/时间等硬拦截直接返回，不经过流式分片
             self._on_chunk(reply)
+        self.chat.finish_assistant()
+        if res.get("error"):
+            self.chat.add_notice(f"⚠ {res['error'][:200]}")
         if reply and not res.get("error") and voice.speaker.enabled:
             # 整段回复合成一次，避免流式逐句拼接造成的断续和重复起播
             voice.speaker.speak(reply)
@@ -953,7 +1228,7 @@ class BaymaxWindow(QMainWindow):
     def _on_reminder(self, payload: dict):
         content = payload.get("content", "")
         prefix = "补发" if payload.get("type") == "catch_up" else "提醒"
-        self.chat.append(f"<p style='color:#b45309'><b>⏰ {prefix}</b> {html.escape(content)}</p>")
+        self.chat.add_notice(f"⏰ {prefix}：{content}")
         self.toast.setText(f"⏰ {prefix}：{content}")
         self.toast.show()
         self._toast_timer.start(8000)

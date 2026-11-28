@@ -58,7 +58,7 @@ def phase2(res):
 def phase3():
     win.grab().save(state["shot"])
     print("[4] 截图:", state["shot"])
-    print("    chat tail:", win.chat.toPlainText().strip().splitlines()[-2:])
+    print("    chat tail:", win.chat.plain_text().strip().splitlines()[-2:])
     ok = bool(state["reply"]) and ("大" or True)
     print("RESULT:", "PASS" if ok else "FAIL")
     app.quit()

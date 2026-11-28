@@ -85,6 +85,20 @@ python scripts\chat_flow.py          # 11 轮连续对话
 - 提醒页没选中就点开关，给提示而不是崩溃。
 - 补发提醒文案不再出现“补发：启动时补发提醒”这种重复前缀。
 
+### 5.1 桌面改成左右分列气泡（2026-11-28）
+
+按参考图把桌面从“整块文本聊天框”改成卡片式布局，不追求一比一还原，颜色保持浅绿：
+
+- `desktop/main_window.py`：新增 `MessageBubble` 与 `ChatView`，不再用 `QTextBrowser` 拼 HTML。用户消息右对齐浅绿气泡，Andy 消息左对齐白底卡片并带绿色左边线，提醒/错误居中浅黄提示条。
+- Andy 气泡最宽约聊天区 82%、最窄约 72%，用户气泡最宽约 68%；流式回复逐块追加到同一个 Andy 气泡，不会一句一个框。
+- 顶部品牌栏：圆形 A logo、Andy、学习·工作·生活助手、右侧本机日期；右侧对话卡片加“● 在线 · 可调用工具”徽标。
+- 左侧新增今日到期/进行中/待提醒三张统计卡，数据来自 `tasks.today_overview()`；下面仍是三线看板与任务表。
+- 底部快捷按钮改成浅绿 pill，输入区改成圆角 composer；语音输入、朗读、语种/音色、发送都在同一行，下面补一行 Enter 发送提示。
+- `desktop/theme.py` 整体换成浅绿主题：背景 `#edf6f0`、白卡 16px 圆角、主色 `#2f7d62`、用户气泡 `#e7f5ed`、Andy 气泡白底 + `#62b394` 左边线。
+- `scripts/smoke_gui.py` 改用 `ChatView.plain_text()` 读取聊天快照，不再调用旧 `QTextBrowser.toPlainText()`。
+
+验证：`python main.py --selftest` 11 项健康检查全 OK；`python scripts/smoke_gui.py` PASS（建任务 → 对话 → 工具结果 → 提醒 → 截图）；`pytest tests -q` 91 passed。README 两张截图已换成新版布局。
+
 ### 7. MCP 客户端框架
 
 以前接一个外部能力就要改 `core/tools.py` 再重启；现在加服务只改配置：
@@ -111,7 +125,7 @@ python scripts\chat_flow.py          # 11 轮连续对话
 
 - `core/asr.py`：Vosk 离线模型 + `sounddevice` 采集 16kHz / 单声道 / 16bit PCM；模型懒加载，缺模型/缺依赖/没麦克风时抛 `AsrError`，界面给可操作提示。
 - 桌面 `ASRWorker` 子线程录音识别，`partial` 信号实时回填临时结果，`done` 信号把最终文本填入输入框；不自动发送，用户可改字后回车。
-- 输入框旁“🎤 语音输入”按钮：点一下开始，再点一下停止；模型准备阶段显示“准备中…”，录音阶段显示“停止录音”。
+- 输入框旁“语音输入”按钮：点一下开始，再点一下停止；模型准备阶段显示“准备中…”，录音阶段显示“停止录音”。按钮文案去掉了 emoji，避免 Qt/Windows 渲染成奇怪字形。
 - 识别结果做中文空格归一化；长句按 Vosk 的停顿结果用逗号连接，避免“你 好 世 界”这种空格文本直接进模型。
 - 真实模型：官方 `vosk-model-small-cn-0.22.zip` 完整下载 43,898,754 字节并解压；把中文 TTS 样本转成 16kHz 单声道 WAV 后识别，输出“你好我是安迪”。`sounddevice` 已识别本机 `麦克风阵列 (Realtek(R) Audio)`，16kHz/单声道/int16 参数校验通过；真人麦克风端到端复测还没做。
 

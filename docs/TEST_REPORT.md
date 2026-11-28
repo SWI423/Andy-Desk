@@ -24,7 +24,7 @@
 | 记忆扩展复核 | `scripts/eval_memory.py --variant hybrid` | 另一套 39 条语料 + 15 个概括式/指代式问句，防止只在 10 问句上“刷分” | **hit@1 100%、hit@3 100%、MRR 1.00** |
 | 任务评测 | `scripts/task_eval.py` | 18 个真实模型场景、19 个断言：建任务/相对日期/查询/完成/开始/进度/拆解/提醒/每日提醒/重复/别名/偏好/身份/过去时间/一句话两件事 | **19/19 PASS** |
 | 多轮对话流程 | `scripts/chat_flow.py` | 11 轮连续对话：建任务→拆解→开始→完成→记过敏→设提醒→闲聊多轮→跨轮问过敏→跨轮问答辩进展 | **4/4 PASS**，第 11 轮能查出准确状态 |
-| GUI 冒烟 | `scripts/smoke_gui.py` | 建任务→发消息→模型调工具→提醒浮层→截图 | **PASS**，截图 `logs/gui_flow.png` |
+| GUI 冒烟 | `scripts/smoke_gui.py` | 建任务→发消息→模型调工具→提醒浮层→截图；聊天快照改用 `ChatView.plain_text()` | **PASS**，新版左右分列气泡截图 `logs/gui_flow.png` |
 | 窗口自检 | `main.py --selftest` | 对话核心/记忆/任务/调度/工具/数据库/向量层/MCP/语音/语音输入 10 个模块 + 模型配置，共 11 项 | **配好 `.env` 与 ASR 模型时全 OK**；开发副本缺 key 时仅“对话核心”FAIL，截图 `logs/selftest_window.png` |
 | MCP 链路 | `tests/test_mcp.py` + `scripts/mcp_demo_server.py` | 启动 demo server、握手、工具发现、只读调用、写入拒绝/确认、坏命令隔离、无配置 | **7/7 PASS** |
 | 语音与语种 | `tests/test_voice.py` + 真实合成 | 清洗、截断、音色路由、语种与音色独立、旧值迁移、跨语种提示、整段一次合成、队列、edge 失败降级 SAPI、健康检查；6 个选定音色真实合成 | **15/15 PASS**；6 个音色全部合成成功（`logs/voice_check/`） |
